@@ -1,0 +1,116 @@
+# vim: set filetype=sh:
+
+# This file is for utilities that other programs use. Command-line conveniences do not belong here.
+
+# Define the admissible type names and their regexes. Define it in pieces like this to allow explanatory comments for each regex.
+# Preserving the fixed width is important - the code relies on it.
+# Note: the alnumRegex line does not allow most punctuation. This should be improved.
+
+NL=$'\n'
+ typeRegexMap=$NL"integer      ^[0-9]+$"                                       # an integer
+typeRegexMap+=$NL"float        ^[0-9]*[.][0-9]+$"                              # a number with a decimal point, does not match ints
+typeRegexMap+=$NL"sqlDate      ^[0-9]{4}[/-][0-9]{1,2}[/-][0-9]{1,2}$"         # y/m/d or y-m-d date
+typeRegexMap+=$NL"reverseDate  ^[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{4}$"         # m/d/y or m-d-y date
+typeRegexMap+=$NL"timestamp    ^[0-9]{4}[/-][0-9]{1,2}[/-][0-9]{1,2} [0-9]{1,2}:[0-9]{2}:[0-9]{2}"  # sqlDate and time, with am/pm trailer optional
+typeRegexMap+=$NL"alpha        ^[[:alpha:] ]+$"                                # 1 alphabetic word but may have embedded spaces
+typeRegexMap+=$NL"alnum        ^[[:alnum:] .]+$"                               # 1 alphanumeric word but may have embedded spaces
+typeRegexMap+=$NL"list         .,."                                            # any comma-separated list
+typeRegexMap+=$NL"prefixList   ^[[:alnum:]]+:[[:alnum:]]+,"                    # abbreviated list, using colon-prefix notation
+typeRegexMap+=$NL"range        ^[^-]+-[^-]+$"                                  # two values delimited by a minus sign. Captures num ranges, date ranges, ...
+typeRegexMap+=$NL"numRange     ^[0-9.]+-[0-9.]+$"                              # two floats or ints delimited by a minus sign
+typeRegexMap+=$NL"dateRange    ^[0-9]{4}/[0-9]{1,2}[0-9/-]*$"                  # year/month[/day]-...
+typeRegexMap+=$NL"option       ^-."                                            # minus sign with trailing chars
+typeRegexMap+=$NL"selection    ^\+"                                            # plus sign, might be isolated
+typeRegexMap+=$NL"value        ^([^-]|-$)"                                     # anything that does NOT begin with minus sign, unless it is an isolated minus
+typeRegexMap+=$NL"null         ^-$"                                            # an isolated minus sign
+typeRegexMap+=$NL"optionEq     ^-.+=."                                         # a minus, a name, equals sign, then anything
+typeRegexMap+=$NL"optEqList    ^-.+=.+,"                                       # a minus, a name, equals sign, first value, comma, then anything
+typeRegexMap+=$NL"optionCmp    ^-[[:alnum:]]+[=\<\>\!]{1,2}[[:alnum:]]"        # a minus, a name, a comparator, then anything starting with alnum
+typeRegexMap+=$NL"nameCmpValue ^[[:alpha:]][[:alnum:]._]+([0-9])?[=\<\>\!]{1,2}[[:alnum:]%_.@-]" # a name, a comparator, then anything starting with alnum/regex/punct
+typeRegexMap+=$NL"intList      ^[0-9]+(,[0-9]+)+$"                             # 2 or more ints separated by commas
+typeRegexMap+=$NL"floatList    ^([0-9.]+,)*[0-9]*[.][0-9]+(,[0-9.]+)*$"        # 2 or more floats, at least one a non-integer, separated by commas
+typeRegexMap+=$NL"alnumList    ^[[:alnum:] ]+,[[:alnum:] ,]+$"                 # 2 or more alnums separated by commas (consecutive commas would pass this filter)
+typeRegexMap+=$NL"alnumRegex   ^[[:alnum:] .,]*[%_][[:alnum:] .,%_]*$"         # 1 or more alphanumeric SQL regexes. If several, they must be separated by commas
+typeRegexMap+=$NL
+
+##################################################################
+# isArgOfType  arg  type
+#   (type can be a pipe-delimited list, e.g. "type1|type2|type3")
+##################################################################
+function isArgOfType()
+{
+    declare -i retVal
+
+    if [[ $# -lt 2 ]]; then
+        return 1
+    fi
+
+    local a_value="$1"
+    local a_typeName="$2"
+
+    shopt -s extglob
+
+    # Make the common case fast. That's when "a_typeName" is a single type name, i.e. it contains no pipe delimiters
+    if [[ ! "$a_typeName" =~ | ]]; then
+
+        # Grab the regex for this typename from the big typeRegexMap above
+        [[ "$typeRegexMap" =~ $NL${a_typeName}[\ ]+([^$'\n']*) ]]  # This finds the line having FIRST COLUMN of a_typeName and grabs the regex.
+        regex=${BASH_REMATCH[1]}
+        if [[ -z $regex ]]; then echo Unrecognized type name "$a_typeName". > /dev/stderr; return 0; fi
+
+        # See if the regex matches the value supplied
+        [[ ! "$a_value" =~ $regex ]]; retVal=$?     # yes=>1, no=>0
+
+    # The less-frequent case: multiple typeNames OR-ed together. Return the one-based ordinal of the typeName matching the given value.
+    else
+
+        # For just these typeNames, grab the regex-typeName pairs from the typeRegexMap
+        unset regexSet typeRegexPairs
+        mapfile -t <<< "$typeRegexMap"
+
+        for line in "${MAPFILE[@]}"; do
+            if [[ "$line" =~ ^($a_typeName)\  ]]; then
+                regexSet+=$'('${line:13}$')|'
+                typeRegexPairs+=$line$'\n'
+            fi
+        done
+        regexSet=${regexSet%$'|'}
+
+        if [[ ! $typeRegexPairs =~ [[:alpha:]] ]]; then echo Unrecognized type name "$a_typeName". > /dev/stderr; return 0; fi
+
+        # Match the value against the set of regexes corresponding to the given typeNames
+        if [[ "$a_value" =~ $regexSet ]]; then
+
+            # Determine the one-based index number of the typeName that actually describes the value, in the ordered type list that was given to us.
+
+            # First, figure out which regex from the OR-ed set actually matched
+            whichRegex="${BASH_REMATCH[@]:1}"   # Step 1: Get everything from BASH_REMATCH except the 0 entry into one string
+            whichRegex="${whichRegex%%[^ ]*}"   # Steps 2-3: Blanks in BASH_REMATCH denote regexes that were NOT matched. In two steps
+            whichRegex=${#whichRegex}           #            we isolate the non-blank part and determine how far out it sits.
+
+            # Next, find the typename corresponding to this regex in the list of typename-regex pairs, 
+            # and finally determine where this typename sits in the original typelist.
+            OLDFS=$IFS; IFS=$'\n'
+            typeRegexArr=($typeRegexPairs)
+            typeName=${typeRegexArr[whichRegex]:0:13}
+            typeName=${typeName%% *}
+            IFS=$'|'
+            typeNameArr=($a_typeName)
+            IFS=$OLDFS
+            local idx
+            for ((idx=0; idx<"${#typeNameArr[@]}"; idx++)); do
+                if [[ ${typeNameArr[idx]} == $typeName ]]; then
+                    ((retVal=++idx))
+                    break
+                fi
+            done
+
+        else
+            retVal=0
+        fi
+    fi
+
+    return $retVal
+}
+
+

@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+
+: ${TQL_HOME:=$HOME/tql}
+source $TQL_HOME/db_functions
+
+THIS_SCRIPT=`basename $0`
+
+if [[ $# -lt 1 ]]; then
+    echo "USAGE: $THIS_SCRIPT  tableNameRegex  [columnNameRegex]  [other args]"
+    echo "       Table names before column names, please."
+    exit 1
+fi
+
+# Initialize the query parts.
+STANDARD_COLS="table_name,column_name,column_type"
+TABLES="information_schema.columns c"
+WHERE_PRECLAUSE="table_schema='$DBNAME'"
+
+# Column name inference rules
+g_defaultAlnums=table_name
+
+# Three major steps to prepare the query:
+#
+# (1) Produce the table-names part of the WHERE clause. This requires special care when the tableNames argument is a comma-separated list.
+# (2) Treat all the other arguments properly (the where-particles along with any +/- prefixed options).
+# (0) But first, a little maneuver that enables us to accept the arguments in any order, as long as
+#     the tableNames come before the columnNames (if any): we bring the tableNames to the front of the arg list.
+#     Then we can perform step (1), shift out $1, and then process everything else in the usual way
+
+# Step (0): Bring table name to front of arg list
+if [[ "$1" =~ ^[+-] ]]; then
+    index=1
+    for param in "$@"; do
+        if [[ "$param" =~ ^[^+-] ]]; then
+            break
+        else
+            ((index++))
+        fi
+    done
+    if ((index>1 && index<=$#)); then
+        paramList='"$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"'
+        # Swap the identified parameter with $1
+        paramList=${paramList/$index/1}
+        paramList=${paramList/1/$index}
+        # Chop down to the actual number of parameters: delete "$($#)+1" and whatever follows
+        paramList=${paramList%'"$'$(($#+1))*}
+        # Make the parm swap effective
+        set $(eval echo $paramList)
+    fi
+fi
+
+# Step (1): Create the table_name part of the WHERE clause.
+if [[ "$1" =~ [.] ]]; then
+    # If absolute table name(s) are given (i.e. the containing DB is explicitly named), strip off the DB name. The main query
+    # can only accept relative table names. This issue arises e.g. in FindSproc which uses the table "information_schema.routines".
+    relativeTable="${1#*.}"
+    if [[ "$relativeTable" =~ , ]]; then
+        relativeTable=$(sed 's/,[^.]*\./,/g' <<< "$relativeTable")
+    fi
+else
+    relativeTable="$1"
+fi
+if [[ "$relativeTable" =~ , ]]; then
+    # If we're given a comma-separated list of multiple table names/regexes, invoke the special argument parser
+    generateWhereClause "" "" "$relativeTable"  # TODO: This is prolly costly when used. Try to optimize.
+    WHERE_PRECLAUSE=$WHERE_PRECLAUSE"${g_returnString%$delim*}"
+else
+    WHERE_PRECLAUSE=$WHERE_PRECLAUSE" AND table_name LIKE '$relativeTable'"
+fi
+shift
+
+# Step (2): Normal parsing of everything else
+
+# The normal parse uses some different default column names
+g_defaultAlnums=c.column_name
+
+# Invoke the main parsing routine
+parseCompletely  "$STANDARD_COLS"  "$TABLES"  "column_name"  "$WHERE_PRECLAUSE"  "$@"
+retVal=$?
+parsedClauses=$g_returnString
+if ((retVal >= 10)); then
+    echo Exiting.
+    exit $retVal
+elif ((retVal == 1)); then
+    g_ACTION=UPDATE
+fi
+
+# Parse out the SQL clauses from the return string
+if [[ $parsedClauses =~ $fiveValueParser ]]; then
+    OPTIONS="${BASH_REMATCH[1]}"
+    ACTION_CLAUSE="${BASH_REMATCH[2]}"
+    WHERE_CLAUSE="${BASH_REMATCH[3]}"
+    LIMIT="${BASH_REMATCH[4]}"
+    sortInstructions="${BASH_REMATCH[5]}"
+fi
+
+isOptionOn "debug|d" $OPTIONS
+if (($?)); then
+    echo $THIS_SCRIPT:
+    echo "  Options: $OPTIONS"
+    echo "  $g_ACTION:  $ACTION_CLAUSE"
+    echo "  Tables:  $TABLES"
+    echo "  Where:   $WHERE_CLAUSE"
+    echo "  Limit:   $LIMIT"
+fi
+
+# Compare to: SHOW COLS FROM $TABLES $WHERE_CLAUSE;
+if [[ $g_ACTION == UPDATE ]]; then
+    DB_COMMAND="$g_ACTION $TABLES $ACTION_CLAUSE $WHERE_CLAUSE $LIMIT"
+else
+    DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES $WHERE_CLAUSE $LIMIT"
+fi
+
+isOptionOn "q|query" $OPTIONS
+if (($?)); then
+    echo "$DB_COMMAND"
+    exit 0
+fi
+
+RAW_RESULT=$(mysql $g_mysqlOptions -t -e "$DB_COMMAND") || exit $?
+if [[ $g_ACTION == UPDATE ]]; then exit 0; fi
+
+isOptionOn "dontExpand|de" $OPTIONS    # Not the best way to check that Desc is being invoked directly from the cmd line...
+#[[ -z $PS1 ]]
+cmdLineMode=$((! $?))
+
+if [[ -z $RAW_RESULT ]]; then
+    if ((cmdLineMode)); then
+        echo No table/column found. > /dev/stderr
+        exit 1
+    fi
+fi
+
+#if ((cmdLineMode)); then
+    foldResultSet "$RAW_RESULT" "$sortInstructions"
+#fi
+

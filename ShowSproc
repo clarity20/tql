@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+
+: ${TQL_HOME:=$HOME/tql}
+source $TQL_HOME/db_functions
+
+THIS_SCRIPT=`basename $0`
+
+if [[ $# -lt 1 ]]; then
+    echo USAGE: $THIS_SCRIPT ' sproc_name'
+    echo '    Shows the code for the installed procedure.'
+    exit 1
+fi
+
+# Extract the options from the command line
+parseOutOptions "$@"
+retVal=$?
+parsedOpts=$g_returnString
+if ((retVal)); then
+    OPTIONS=${parsedOpts%$delim*}
+    eval set ${parsedOpts#$OPTIONS$delim}
+    if [[ "$1" =~ $placeholderForSet ]]; then shift; fi
+fi
+
+# TODO: Expand this feature to print out SQL sProc text files if the right option is set.
+
+# This script currently does not allow modification of the SELECT clause. In particular, the result set is parsed
+# on the ASSUMPTION that the selection is exactly the ACTION_CLAUSE defined here.
+ACTION_CLAUSE=routine_name,routine_definition
+TABLES=information_schema.routines
+WHERE_PRECLAUSE="routine_type='procedure' AND routine_schema='$DBNAME'"
+
+g_defaultAlnums=routine_name
+
+# Use the parsing engine to process singletons, lists, regexes, and regex lists of sProc names
+generateWhereClause "" "" "$@"
+parsedWheres=$g_returnString
+WHERE_CLAUSE=$WHERE_PRECLAUSE"${parsedWheres%$delim*}"
+
+isOptionOn "debug|d" $OPTIONS
+if (($?)); then
+    echo $THIS_SCRIPT:
+    echo "  Options: $OPTIONS"
+    echo "  $g_ACTION:  $ACTION_CLAUSE"
+    echo "  Tables:  $TABLES"
+    echo "  Where:   $WHERE_CLAUSE"
+    echo "  Limit:   $LIMIT"
+fi
+
+DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES WHERE $WHERE_CLAUSE"
+
+isOptionOn "q|query" $OPTIONS
+if (($?)); then
+    echo "$DB_COMMAND"
+    exit 0
+fi
+
+# Run the query. Special processing will be necessary because the stored proc bodies can be large and will contain embedded newlines.
+RAW_RESULT=$(mysql $g_mysqlOptions -t -e "$DB_COMMAND") || exit $?
+
+# Reduce the result set to a simple pair of columns -- the Sproc names and their bodies.
+# (1) Remove the horizontal lines from the result set. (Replaces the slower grep -v.)
+[[ "$RAW_RESULT" =~ ^[+-]+$'\n'([^+]+)\+[+-]+$'\n'([^+]+)$'\n'\+ ]]
+# (2) Remove the column headers, leaving only the data itself.
+dataRows="${BASH_REMATCH[2]}" # [1] = column hdr   [2] = data rows
+# (3) Array-ify the lines for easier processing
+mapfile -t <<< "$dataRows"
+
+# Process the lines.
+for ((i=0; i<${#MAPFILE[*]}; i++)); do
+
+    # Determine when a new record starts
+    if [[ "${MAPFILE[i]}" =~ ^\| ]]; then
+
+        # Break apart the proc name and the proc body
+        [[ "${MAPFILE[i]}" =~ ^\|\ ([^ ]*)[\ ]+\|\ (.*) ]]
+
+        # Print the proc name with a banner
+        echo "************************************** PROCEDURE NAME: ${BASH_REMATCH[1]} **************************************"
+
+        # Print the top line of the body
+        echo ${BASH_REMATCH[2]}
+
+    # Determine when a proc body ends
+    elif [[ "${MAPFILE[i]}" =~ (.*)\ \|$ ]]; then
+
+        # Print the last line minus the trailing delimiter
+        echo ${BASH_REMATCH[1]}
+
+    else
+        # Print the intermediate lines
+        echo "${MAPFILE[i]}"
+    fi
+done
+

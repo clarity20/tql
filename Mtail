@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+
+: ${TQL_HOME:=$HOME/tql}
+source $TQL_HOME/db_functions
+
+THIS_SCRIPT=`basename $0`
+
+if [[ $# -lt 1 ]]; then
+    echo USAGE: $THIS_SCRIPT [-numRows] tableName
+    echo Default: 10 rows
+    exit 1
+fi
+
+ACTION_CLAUSE='*'
+
+# Parse the cmdline opts
+parseOutOptions "$@"     # return string contains options on line 1, symbolic list of non-option args on line 2
+retVal=$?
+parsedOpts=$g_returnString
+if ((retVal)); then
+    OPTIONS=${parsedOpts%$delim*}
+    eval set "-- "${parsedOpts#$OPTIONS$delim}
+fi
+
+NUMROWS=$(isOptionOn "[0-9]+" $OPTIONS -show)
+: ${NUMROWS:=10}
+
+OLDFS=$IFS; IFS=$'\n'
+
+# Fetch and store the table names and primary key names
+TABLE_INFO=($(GetNextId "$1" -noHeader))
+
+# Set flag to show the banner if tablename regex or multiple tables were requested
+if [[ "$1" =~ [,%] ]]; then
+    SHOW_TABLENAME_HEADER=1
+fi
+
+LIMIT="LIMIT $NUMROWS"
+
+for line in ${TABLE_INFO[*]}; do
+
+    # Break out the table name and primary key name for each table
+    [[ $line =~ \ +([^ ]+)\ +([^ ]+)\  ]]
+    TABLE[lineCount]=${BASH_REMATCH[1]}
+    pkColumn=${BASH_REMATCH[2]}
+
+    ORDERBY_CLAUSE=" ORDER BY $pkColumn DESC"
+    
+    isOptionOn "debug|d" $OPTIONS
+    if (($?)); then
+        echo $THIS_SCRIPT:
+        echo " Options:  $OPTIONS"
+        echo "  $g_ACTION: $ACTION_CLAUSE"
+        echo "  Tables:  ${TABLE[lineCount]}"
+        echo "   Where:  $WHERE_CLAUSE"
+        echo "  OrderBy: $ORDERBY_CLAUSE"
+        echo "  Limit:   $LIMIT"
+    fi
+    
+    # Build a compound SQL command by stringing together the individual queries
+    DB_COMMAND+="$g_ACTION $ACTION_CLAUSE FROM ${TABLE[lineCount]} $WHERE_CLAUSE $ORDERBY_CLAUSE $LIMIT;"$'\n'
+
+    ((lineCount++))
+done
+
+isOptionOn "q|query" $OPTIONS
+if (($?)); then
+    echo "$SUBCOMMAND"
+    exit 0
+fi
+
+# Call mysql once, array-ify the result and show the banners if necessary.
+RAW_RESULT=($(mysql $g_mysqlOptions -t -e "$DB_COMMAND")) || exit $?
+
+lineCount=0
+for line in ${RAW_RESULT[*]}; do
+
+    # Keep track of where each table begins in the unified result set
+    if [[ $line =~ ^\+ ]]; then
+        if ((separatorCount == 0)); then
+            ((tableStartLine=lineCount))
+        fi
+        ((separatorCount++))
+    fi
+
+    # At the end of the current table, print it out
+    if ((separatorCount == 3)); then
+
+        # Show the banner if required
+        if ((SHOW_TABLENAME_HEADER)); then
+            echo --------------------- ${TABLE[tableCount]} ---------------------
+            echo ----------------------${TABLE[tableCount]//?/-}----------------------
+            ((tableCount++))
+        fi
+
+        # Pretty-print the table
+        ((linesInTable=lineCount-tableStartLine+1))
+        foldResultSet "${RAW_RESULT[*]:$tableStartLine:$linesInTable}"
+
+        separatorCount=0
+    fi
+
+    ((lineCount++))
+done
+
+IFS=$OLDFS

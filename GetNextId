@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+
+: ${TQL_HOME:=$HOME/tql}
+source $TQL_HOME/db_functions
+
+THIS_SCRIPT=`basename $0`
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo "USAGE: $THIS_SCRIPT  table_name\(s\)_regex"
+    exit 1
+fi
+
+STANDARD_COLS="t.table_name as table_name,column_name,auto_increment"
+TABLES="information_schema.tables t,information_schema.columns c"      # A table join is needed because auto_increment is from t and column_name is from c
+WHERE_PRECLAUSE="t.table_name=c.table_name AND t.table_schema=c.table_schema AND t.table_schema='"$DBNAME"'"  # DBNAME uniqifies the result set if there are multiple DBs
+
+g_defaultAlnums=t.table_name
+
+# Invoke the main parsing routine to manage cmdline options and different forms of table-name arguments.
+parseCompletely  "$STANDARD_COLS"  "$TABLES"  ""  "$WHERE_PRECLAUSE"  "$@"
+retVal=$?
+parsedClauses=$g_returnString
+if ((retVal >= 10)); then
+    echo Exiting.
+    exit $retVal
+fi
+
+# Parse out the SQL clauses from the return string
+if [[ $parsedClauses =~ $fiveValueParser ]]; then
+    OPTIONS=${BASH_REMATCH[1]}
+    ACTION_CLAUSE=$STANDARD_COLS  #${BASH_REMATCH[2]}
+    WHERE_CLAUSE=${BASH_REMATCH[3]}
+    LIMIT=${BASH_REMATCH[4]}
+    sortInstructions=${BASH_REMATCH[5]}
+fi
+
+WHERE_CLAUSE+=" AND c.extra='auto_increment'"
+
+DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES $WHERE_CLAUSE"
+
+isOptionOn "q|query" $OPTIONS
+if (($?)); then
+    echo "$DB_COMMAND"
+    exit 0
+fi
+
+RAW_RESULT=$(mysql $g_mysqlOptions -t -e "$DB_COMMAND") || exit $?
+
+foldResultSet "$RAW_RESULT" "$sortInstructions"
+

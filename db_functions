@@ -1,0 +1,2145 @@
+# vim: set filetype=sh:
+
+# Begin with configuration and initialization.
+# TODO: Finish factoring out the constants and configs that precede the function parseCompletely()
+# TODO: into a separate initialization module. Insist on config settings; do not default to the user environment.
+
+# (1) Set some variables locally if they are not set in the environment
+: ${BASHFUNC_HOME:=$HOME}
+: ${TQL_HOME:=$HOME/tql}
+# Override the PATH with the locations of this project installation and your GNU/Linux coreutils
+# TODO: Clarify exactly which versions of the UNIX-like utilities are required.
+PATH=$TQL_HOME:$BASHFUNC_HOME/bin:/usr/local/bin:/usr/bin
+
+# (2) If any of the DB connection parameters are not set, try to look them up in the properties file
+if [[ -z $DBUN || -z $DBPW || -z $DBHOST || -z $DBNAME ]]; then
+    source $TQL_HOME/dbConnectionParms
+    loadDbConnectionParms || exit 6
+fi
+
+# Enable extended file globbing. This allows us to write shorter, simpler code in a few places.
+shopt -s extglob
+
+# Locate isArgOfType.
+# TODO: Phase this out; bring isArgOfType into the sqlUtils code
+source $BASHFUNC_HOME/script_functions
+
+# TODO: Phase in the following idea more comprehensively, and add a mnemonic/convention for CONSTant values.
+# Introduce some variable naming conventions to compensate for BASH's shortcomings with respect to scoping.
+# The intention is to maximize readability and maintainability and to minimize shadowing bugs.
+# (1) Use the prefix g_ to mean "global".
+# (2) Use the form "_varName_funcAbbr" for variables local to the indicated function
+#     and everything lower in the call stack, and used in both.
+# (3) Otherwise, variable names follow no explicit convention.
+
+# Universal sqlUtils constants
+declare -r TRUE=1
+declare -r FALSE=0
+declare -r delim=$'\n'
+declare -r columnGroupDelim="__"
+declare -r ILLEGAL_DEFAULT_ALPHA=illegalDefaultAlpha
+declare -r ILLEGAL_DEFAULT_NUM=illegalDefaultNum
+declare -r NULL_INDICATOR=-
+declare -r placeholderForEmpty=" "
+declare -r defaultAction=SELECT
+declare -r setClauseMarker="@"
+declare -r updateOperator=':='
+declare -r MIN_VALUE_LEN=1       # min/max length of values supplied on the command line
+declare -r MAX_VALUE_LEN=1024
+
+# Our method of indicating filenames (or stdin) as sources of values. This works better for us than "<" or xargs.
+declare -r embeddedFileRegex="@(.*)@"
+
+# For parsing specially-delimited strings
+declare -r threeValueParser="(.*)$delim(.*)$delim(.*)"
+declare -r fourValueParser="(.*)$delim(.*)$delim(.*)$delim(.*)"
+declare -r fiveValueParser="(.*)$delim(.*)$delim(.*)$delim(.*)$delim(.*)"
+
+# Initialize some values needed by almost all sqlUtils. Any specific util can override these if needed.
+g_defaultNums=$ILLEGAL_DEFAULT_NUM
+g_defaultNumCodes=0i
+g_defaultAlnums=$ILLEGAL_DEFAULT_ALPHA
+g_defaultAlnumCodes=qa
+g_ACTION=$defaultAction
+g_warnOnSelectAll=$TRUE      # For large tables, enable a warning message when a query would return the full table. Avoid this for small lookup-type tables.
+
+g_mysqlOptions=""
+g_mainConjunction=AND
+
+# Global scratch space for functions that need to "return" string values. This is slightly faster than
+# subshelling the function calls and capturing the echo'd strings.
+g_returnString=""
+
+# Lists of substitution macros used to expand possibly-abbreviated names of DB columns or tables
+#TODO: This is db specific; move it to a separate config.
+#TODO: Format: two space-delimited columns: expr to find, expr to substitute.
+# TODO: Would be really nice to put the ^... regexes at the top, followed by the ...$ regexes.
+# Then we could pick them off first and avoid false positives later on when recursively expanding the left and right pieces.
+g_columnExpansionMacros=\
+"
+"
+
+g_tableExpansionMacros=\
+"
+"
+
+g_haveParser=$FALSE
+
+# The data description used to expand abbreviated table or column names; a table description
+g_masterList=""
+
+
+##############################################################################################
+# parseCompletely  standardColumns  tables  mainColumn  wherePreclause  <full sqlUtil cmd line>
+# Wraps up the argument parsing engine in a single function, enabling thinner client scripts
+# Return code: 0 for select queries, 1 for updates, 10 or greater for errors
+##############################################################################################
+function parseCompletely()
+{
+    # Values to be set and returned here
+    local OPTIONS
+    local STANDARD_COLS="$1"
+    local TABLES="$2"
+    local mainColumn="$3"
+    local WHERE_PRECLAUSE="$4"
+
+    # Constant ("enum") internal error codes
+    declare -r retCode_noSelection=0
+    declare -r retCode_selectMainColumnOnly=1
+    declare -r retCode_clearAllSelections=2
+    declare -r retCode_ordinarySelection=3
+
+    shift 4
+
+    # Extract the options from the command line
+    parseOutOptions "$@"
+    if (($?)); then
+        # return string contains list of options followed by symbolic list of non-option args
+        OPTIONS=${g_returnString%$delim*}
+        eval set "-- "${g_returnString#$OPTIONS$delim}
+    fi
+
+    # If the UPDATE option is active, prepare the SET clause
+    isOptionOn u $OPTIONS
+    bIsUpdate=$?
+    if ((bIsUpdate)); then
+        parseOutSets "$@"
+        if (($?)); then
+            # Parse out the returned values
+            [[ $g_returnString =~ $threeValueParser ]]
+            SET_CLAUSE=${BASH_REMATCH[1]}
+            setAbbrs=${BASH_REMATCH[2]}
+            eval set "-- "${BASH_REMATCH[3]}
+        else
+            echo Error: The UPDATE flag is set without any UPDATE instructions.
+            return 15
+        fi
+    elif [[ "$@" =~ $updateOperator ]]; then
+        echo Error: An UPDATE instruction was detected but the update flag was not set.
+        return 16
+    fi
+
+    # Extract the column selection modifiers from the command line
+    parseOutSelects "$@"
+    retVal=$?
+    if ((retVal)); then  # some SELECT-type arguments were detected
+
+        # If it's not an UPDATE query, prepare the SELECT clause
+        if ((bIsUpdate)); then
+            echo Error: Both SELECT and UPDATE commands were detected.
+            return 17
+        fi
+
+        # Parse out the returned values
+        if [[ $g_returnString =~ $threeValueParser ]]; then
+            PRESELECTS=${BASH_REMATCH[1]}
+            POSTSELECTS=${BASH_REMATCH[2]}
+            eval set "-- "${BASH_REMATCH[3]}
+            if [[ $PRESELECTS == " " ]]; then PRESELECTS=; fi     ## old way was to use backticks so " " became ""
+            if [[ $POSTSELECTS == " " ]]; then POSTSELECTS=; fi
+        fi
+    fi
+
+    # If required, make special adjustments to the standard column set
+    case $retVal in
+        $retCode_clearAllSelections)   STANDARD_COLS=$placeholderForEmpty ;;
+        $retCode_selectMainColumnOnly) STANDARD_COLS=$mainColumn ;;
+        *) isOptionOn selectAll $OPTIONS
+           if (($?)); then
+               STANDARD_COLS="*"
+           fi ;;
+    esac
+
+    # Pass on any options for the mysql binary
+    g_mySqlOptions=""
+    isOptionOn noHeader $OPTIONS
+    if (($?)); then g_mysqlOptions+="-N "; fi
+
+#TODO: We defer where-expanding to generateWhereClause
+#    # Get the column names from the where-particles
+#    getWhereColumnList "$@"
+#    whereAbbrs=$g_returnString
+
+    # Expand the column names unless directed otherwise
+    isOptionOn "dontExpand|de" $OPTIONS
+    if (($?)); then
+        # Put together the full SELECT clause without expanding. For UPDATEs this is a no-op.
+        ACTION_CLAUSE=${PRESELECTS}${STANDARD_COLS}${POSTSELECTS}
+
+    else
+        # To make things easier, come up with a list of table names *without* aliases
+        TABLE_NAMES=${TABLES//+( )+([[:alpha:]])*( ),*( )/,}     # in two steps, squeeze out table-name aliases "myTable mt," leaving just the table names
+        TABLE_NAMES=${TABLE_NAMES/%+( )+([[:alpha:]])}
+
+        # Obtain the table description so we can expand the column names and determine their data types
+        # TODO: This looks at the first table name only.  Might revisit this later. N.B. expand() requires a fixed-width Desc, so catting
+        # TODO: the separate desc files together would not work. Perhaps make Desc adjust its column-width values whenever a header line is encountered...
+        loadMasterExpansionList $TQL_HOME/tableDesc/${TABLE_NAMES%%,*}
+
+#MMMM: Defer where-expanding to generateWhereClause
+#        # Expand the WHERE clause column names
+#        expandColumnNames "$TABLE_NAMES" "$whereAbbrs"
+#        expandedNames=$g_returnString
+#        expandedWhereCols=${expandedNames%$delim*}
+#        whereCodes=${expandedNames#*$delim}
+
+        if ((bIsUpdate)); then
+            # Expand the SET clause column names and finish off the clause itself
+            expandColumnNames "$TABLE_NAMES" "$setAbbrs"
+            expandedNames=$g_returnString
+            OLDFS="$IFS"; IFS=$',' expandedSetCols=(${expandedNames%$delim*})
+            setCodes=${expandedNames#*$delim}
+
+            local nullPlaceholder=$setClauseMarker$NULL_INDICATOR$setClauseMarker
+            for nextColumn in ${expandedSetCols[@]}; do
+                nextAbbr=${setAbbrs%%,*}; nextCode=${setCodes%%,*}
+
+                # If it's a null marker, put "NULL" in its place
+                if [[ "$SET_CLAUSE" =~ ^[^$setClauseMarker]*$nullPlaceholder ]]; then
+                    SET_CLAUSE=${SET_CLAUSE/$nullPlaceholder/NULL}
+
+                # Else quote the value if necessary
+                elif [[ $nextCode =~ ^q ]]; then
+                    SET_CLAUSE=${SET_CLAUSE/$setClauseMarker/\'}
+                    SET_CLAUSE=${SET_CLAUSE/$setClauseMarker/\'}
+
+                # Else remove the markers from the value
+                else
+                    SET_CLAUSE=${SET_CLAUSE/$setClauseMarker/}
+                    SET_CLAUSE=${SET_CLAUSE/$setClauseMarker/}
+                fi
+
+                SET_CLAUSE=${SET_CLAUSE/$nextAbbr/$nextColumn}
+                setAbbrs=${setAbbrs#$nextAbbr,}; setCodes=${setCodes#$nextCode,}
+            done
+            IFS="$OLDFS"
+            SET_CLAUSE="SET "$SET_CLAUSE
+
+        else
+            # Expand the SELECT clause column names
+# TODO: Eliminate "columnGroupDelim" by splitting up the SELECTs here and calling parse() on each one inside a loop, expand()ing where necessary.
+# Currently, expand() naively splits the SELECTs on commas which is not correct in general. We should split only on those commas
+# that are neither quoted nor escaped and which are not inside parentheses. Progress toward that end might include the following
+# little shell experiment which identifies the parenthesized commas and replaces them with a temp marker:
+#    f='1,(2,3,4),(5,6),7';  g=$f; while [[ $g =~ .*(\([^\)]*,[^\)]*\)) ]]; do m=${BASH_REMATCH[1]//,/_}; g=${g/${BASH_REMATCH[1]}/$m}; echo $g; done
+            selectAbbrs=$PRESELECTS${columnGroupDelim}$POSTSELECTS
+            expandColumnNames "$TABLE_NAMES" "$selectAbbrs"
+            expandedNames=$g_returnString
+            expandedNames=${expandedNames%$delim*}        ## We only care about the column names, which are the first part of the return string...
+
+            # Put together the full SELECT clause
+            if [[ ! $STANDARD_COLS == $placeholderForEmpty ]]; then
+                # Since the expansion is "PREs,delim,POSTs" we just replace "delim" with STANDARD_COLS
+                ACTION_CLAUSE=${expandedNames/$columnGroupDelim/$STANDARD_COLS}
+            else
+                # Without any STANDARD_COLS, the above technique would give us "PREs, ,POSTs". That double comma
+                # is problematic, so we take the expansion and remove "delim" and one comma.
+                local expandedSelectsRegex="(^|,)$columnGroupDelim(,|$)"
+                if [[ $expandedNames =~ $expandedSelectsRegex ]]; then
+                    if [[ -n ${BASH_REMATCH[2]} ]]; then
+                        ACTION_CLAUSE=${expandedNames/$columnGroupDelim,/}
+                    else
+                        ACTION_CLAUSE=${expandedNames/,$columnGroupDelim/}
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    if ((! bIsUpdate)); then
+        # Check for empty SELECT clause. (Should only be possible if "00" option is invoked.)
+        if [[ ! "$ACTION_CLAUSE" =~ [[:alnum:]*] ]]; then
+            echo ERROR: Your column selection is empty. Please select some columns. > /dev/stderr
+            return 10
+        fi
+    fi
+
+    # Build the core WHERE-clause by lexing, parsing and expanding the arguments and translating to SQL.
+#TODO: Defer (etc.):
+#    generateWhereClause "$expandedWhereCols" "$whereCodes" "$@"
+    generateWhereClause "$@"
+    retVal=$?
+    parsedWheres=$g_returnString
+    case $retVal in
+      2) echo Parsing error: Unrecognized argument.
+         return $((retVal+10)) ;;
+      1) echo Incorrect calling syntax.
+         return $((retVal+10)) ;;
+      *) # Parsing was successful.
+         ;;
+    esac
+
+    sortInstructions="${parsedWheres#*$delim}"
+    WHERE_CLAUSE=$WHERE_PRECLAUSE"${parsedWheres%$delim*}"
+
+    # Massage the query contents based on the user options
+    # -- By default, use NULLs "intuitively" inside NOT-subclauses rather than using SQL's built-in 3-valued-logic
+    isOptionOn "trueNull|tn" $OPTIONS
+    if (($? == 0)); then
+        if [[ "$WHERE_CLAUSE" =~ NOT ]]; then
+            useIntuitiveNulls "$WHERE_CLAUSE"
+            WHERE_CLAUSE=$g_returnString
+        fi
+    fi
+
+    WHERE_CLAUSE="${WHERE_CLAUSE/# $g_mainConjunction/WHERE}"     ## need to do this for every custom script where the WHERE_PRECLAUSE is empty
+    if [[ (! $WHERE_CLAUSE =~ ^WHERE) && ($WHERE_CLAUSE =~ [[:alpha:]]) ]]; then
+        WHERE_CLAUSE="WHERE $WHERE_CLAUSE"
+    fi
+    if [[ "$WHERE_CLAUSE" =~ illegalDefault ]]; then
+        if [[ "$WHERE_CLAUSE" =~ $ILLEGAL_DEFAULT_ALPHA ]]; then
+            echo FAIL: Cannot infer a column name for pure alphabetic or regex arguments.
+        elif [[ "$WHERE_CLAUSE" =~ $ILLEGAL_DEFAULT_NUM ]]; then
+            echo FAIL: Cannot infer a column name for pure numeric arguments.
+        fi
+        return 13
+    fi
+
+    isOptionOn "l[0-9]+" "$OPTIONS" -show; LIMIT_CLAUSE=$g_returnString
+    if [[ -n "$LIMIT_CLAUSE" ]]; then
+        LIMIT_CLAUSE="LIMIT "${LIMIT_CLAUSE#[Ll]}
+    fi
+    : ${LIMIT_CLAUSE:=$placeholderForEmpty}
+
+    # Warn about queries that would return every single record, if the warning makes sense for the table.
+    if [[ ( $WHERE_CLAUSE == $placeholderForEmpty ) && ( ! $LIMIT_CLAUSE =~ [1-9] ) && ( ! $ACTION_CLAUSE =~ "count(*)" ) && ( $g_warnOnSelectAll == 1 ) ]]; then
+        echo WARNING: Query is unrestricted, every record will be returned! > /dev/stderr
+        read -n1 -p "Continue (y/n)? " doContinue > /dev/stderr
+        echo > /dev/stderr
+        if [[ ! $doContinue =~ ^[Yy]$ ]]; then
+            echo Query cancelled.
+            return 14
+        fi
+    fi
+
+    g_returnString="$OPTIONS"
+    g_returnString+=$delim
+    g_returnString+="${SET_CLAUSE:-$ACTION_CLAUSE}"
+    g_returnString+=$delim
+    g_returnString+="$WHERE_CLAUSE"
+    g_returnString+=$delim
+    g_returnString+="$LIMIT_CLAUSE"
+    g_returnString+=$delim
+    g_returnString+="$sortInstructions"
+
+    return $bIsUpdate
+}
+
+####################################################################################
+####################################################################################
+function loadMasterExpansionList()
+{
+    local tableDescFile=$1
+
+    if [[ -f $tableDescFile ]]; then
+        mapfile -t < $tableDescFile
+        OLDFS=$IFS; IFS=$'\n' g_masterList="${MAPFILE[*]}"
+        IFS=$OLDFS
+    else
+        g_masterList=$(Desc "$TABLE_NAMES" +column_default -dontExpand)      # subshell because we're calling a script, not a function
+    fi
+}
+
+
+####################################################################################
+# useIntuitiveNulls
+# Alters a fully-constructed WHERE clause so as to imitate a user-friendly 2-valued logic
+# in place of SQL's 3-valued logic; IOW, allows NULL values to pass not-equal checks against
+# non-NULL values. If the "trueNull" option is set, the caller AVOIDs this function.
+####################################################################################
+function useIntuitiveNulls()
+{
+    # Divide the given WHERE clause at the "NOT (" if it exists
+    local lhs="${1%%NOT (*}"
+    local rhs="${1#$lhs}"
+
+    # Walk the given WHERE-clause for NOT-subclauses we need to change
+    while [[ $rhs =~ ^NOT\  ]]; do
+
+        # The first goal is to correctly and exactly identify the next NOT subclause.
+        # We are working with three forms of NOT subclauses; observe they might or might not make provisions for "NULL".
+        #     (1) NOT (x = value    [OR ... OR    y = value] [ OR x IS NULL])
+        #     (2) NOT (x LIKE 'rgx' [OR ... OR y LIKE 'rgx'] [ OR x IS NULL])
+        #     (3) NOT (x IN (list)  [OR ... OR  y IN (list)] [ OR x IS NULL])
+
+        # Find the ")" character that closes the NOT clause.
+        # For cases (1),(2) we can just chop at the first ")" since they will never have internal parentheses
+        notClause=${rhs%%)*}")"
+
+        # For case (3), the preceding is not correct because of the internal parentheses
+        if [[ $notClause =~ \(.*\( ]]; then
+            # Extend the NOT clause to the terminating "))" or "NULL)", whichever is nearer. Choose by chopping the string both ways and measuring.
+            # Note: If the applicable terminating sequence is all the way at the end, then the chopped pieces will have equal length. Careful!
+            toNextParens=${rhs%%\)\)*}
+            toNextNULL=${rhs%%NULL\)*}
+            ((lengthDiff=${#toNextNULL}-${#toNextParens}))
+            if [[ ( $lengthDiff -gt 0 ) || ( $lengthDiff -eq 0 && $toNextParens =~ \)\) ) ]]; then
+                notClause=$toNextParens"))"
+            else
+                notClause=$toNextNULL"NULL)"
+            fi
+        fi
+
+        # Skip this NOT clause if it already takes "nullness" into account
+        if [[ $notClause =~ NULL ]]; then
+            lhs+=$notClause         # increase
+            rhs=${rhs#$notClause}   # shrink
+
+        # Update the NOT clause by allowing NULLs as appropriate.
+        else
+            # Every column listed in the NOT-clause should explicitly allow NULLs, since we're simulating "intuitive" NULLs
+            # and we're currently inside a "NOT". Also, observe that the NOT-clause will contain just one column
+            # unless it was constructed by iterating over default{Num,Alnum}Cols. So to get the full column list,
+            # we check whether the last column name differs from the first, and if so
+            # we'll iterate over default{Num,Alnum}Cols; otherwise we just take the first column name we see.
+
+            originalNotClause=$notClause
+
+            # Parse out the first column name
+            [[ $notClause =~ \(([^ ]*)\ (LIKE|IN|=)(.*) ]]
+            firstColumnName="${BASH_REMATCH[1]}"
+
+            # Is the NOT clause a compound clause?
+            if [[ $notClause =~ \ OR\  ]]; then
+
+                # Parse out the last column name
+                [[ $notClause =~ ([^ ]*)\ (LIKE|IN|=)\ [^\ ]*$ ]]
+                lastColumnName="${BASH_REMATCH[1]}"
+
+                if [[ $firstColumnName == $lastColumnName ]]; then
+                    columnList=$firstColumnName
+                elif [[ $g_defaultAlnums =~ $firstColumnName.*$lastColumnName ]]; then
+                    columnList=$g_defaultAlnums
+                else
+                    columnList=$g_defaultNums
+                fi
+
+                # Make the key addition(s) to the NOT-subclause
+                notClause="("$notClause
+                OLDFS="$IFS"; IFS=$','
+                for columnName in $columnList; do
+                    $notClause+=" OR ${columnName%%:*} IS NULL"       # chop off any special indicators appended to the columnName
+                done
+                notClause+=")"
+                IFS="$OLDFS"
+
+            # Otherwise the NOT subclause is a simple clause and we have only one column name
+            else
+                notClause="("$notClause
+                notClause+=" OR "$firstColumnName" IS NULL)"
+            fi
+
+            # Update lhs/rhs for the next iteration: substitute in the modified NOT subclause
+            # and advance to the next NOT subclause if there is one
+            lhs+=$notClause
+            rhs=${rhs#$originalNotClause}
+        fi
+
+        # When there are no more NOT clauses, finalize the string and break the loop
+        if [[ ! rhs =~ ^NOT\  ]]; then
+            lhs+=$rhs
+            break
+        fi
+    done
+
+    # End of function.
+    g_returnString=$lhs
+}
+
+####################################################################################
+# expandFully abbreviation expansionList
+# Recursive helper function for expandAbbreviatedNames()
+####################################################################################
+function expandFully()
+{
+    if [[ -z $1 ]]; then
+        # Empty argument: Nothing (more) to expand. The recursion stops.
+        g_returnString=""
+        return
+    fi
+
+    local abbr="$1"
+    local retStr="$abbr"
+    local excepList newAbbr excepWords
+
+    OLDFS="$IFS"; IFS=$'\n' excepList=($2)
+    IFS="$OLDFS"
+
+    local didExpand=0
+
+    # Want to split the exception lines at whitespace.
+    for excepLine in "${excepList[@]}"; do
+        excepWords=($excepLine)
+
+        # Match the nameAbbr against the zeroth word of the array element, which is the regex
+        if [[ $abbr =~ ${excepWords[0]} ]]; then
+
+            # Substitute and recurse. words[0] is the regex, words[1] is the replacement.
+            newAbbr=${abbr/${BASH_REMATCH[0]}/ ${excepWords[1]} }
+            didExpand=1
+
+            # Recursively expand the remaining pieces on the left and right sides
+            expandFully "${newAbbr%% *}" "$2"
+            retStr=$g_returnString
+            retStr+=" ${excepWords[1]} "
+            expandFully "${newAbbr##* }" "$2"
+            retStr+=$g_returnString
+            break
+        fi
+    done
+
+    if ((didExpand)); then
+        g_returnString=$retStr
+    else
+        g_returnString="."$abbr
+    fi
+}
+
+############################################################################################
+# expandColumnNames  tables  abbreviatedNames  [extraExpansionMacros]
+# Given a reference list of tables and some possibly-abbreviated column names, this function uses the current global
+# column information to expand those names to their fully-spelled-out equivalents. Other content is left alone
+# (in a perfect world). This function also produces a vector of type-codes showing e.g. which columns require quotes
+# and which do not.
+#
+# The abbreviatedNames argument must be comma-delimited.
+############################################################################################
+function expandColumnNames()
+{
+    parserSetupCommand=setupColumnInfoParser
+    matchFinderCommand=generateColumnNameMatches
+    finalizeExpandedNameCommand=finalizeExpandedColumnName
+    _expand_substitutionMacros=$g_columnExpansionMacros
+
+    expandAbbreviatedNames "$@"
+    return $?
+}
+
+############################################################################################
+# expandTableNames  abbreviatedNames  [extraExpansionMacros]
+# Given a list of possibly-abbreviated table names, this function uses the global
+# table information to expand those names to their fully-spelled-out equivalents. Other content is left alone
+# (in a perfect world).
+#
+# The abbreviatedNames argument must be comma-delimited.
+############################################################################################
+function expandTableNames()
+{
+    parserSetupCommand=setupTableInfoParser
+    matchFinderCommand=generateTableNameMatches
+    finalizeExpandedNameCommand=finalizeExpandedTableName
+    _expand_substitutionMacros=$g_tableExpansionMacros
+
+    expandAbbreviatedNames "" "$@"    # Use an empty placeholder for $1 which is intended for column-name expansion only
+    return $?
+}
+
+############################################################################################
+# expandAbbreviatedNames  tables  abbreviatedNames  [extraExpansionMacros]
+# The workhorse function for the expand{Column,Table}Names functions above. This is a "private",
+# "base-class" function for this family of expander routines and should not be invoked by the outside world.
+#
+# Ultimately this function produces a fully expanded name or a list of names, given an abbreviated
+# name or a list of abbreviations; plus a list of codes containing extra information about the full names
+# retrieved. The expansion is performed by converting the abbreviation into a regex and matching that
+# against the set of permissible full names.
+############################################################################################
+function expandAbbreviatedNames()
+{
+
+    local inputAbbrevs
+    OLDFS="$IFS"; IFS=$',' inputAbbrevs=($2)
+    IFS="$OLDFS"
+
+    local macroSubstitutionList="$3"$'\n'$_expand_substitutionMacros
+    local nameAbbr matchingName matchingLine
+    declare -a finalNames finalCodes    # return arrays. The codes are used with all column names and as an error indicator for errant tables and columns.
+    declare -i nameCount=0 numCandidates abbrLength retVal=0
+
+    declare -a _expand_matchList
+    local      _expand_nameRegex
+    declare -a _expand_columnOffsets   # Parameters for parsing fixed-width strings
+    declare -a _expand_columnWidths
+
+    # Initialize the parser settings
+    $parserSetupCommand
+
+    # Cycle through the abbreviations to see if we can match them to actual column names
+    for nameAbbr in "${inputAbbrevs[@]}"; do
+
+        numCandidates=0
+        unset matchingLine _expand_matchList
+
+        # Preserve blank / space-filled / special delimiter args
+        if [[ ! "$nameAbbr" =~ [[:alnum:]] ]]; then
+            finalNames[nameCount]="$nameAbbr"
+            finalCodes[nameCount]=XX    # anything besides q (for quote) is ok.
+            ((nameCount++))
+            continue
+        fi
+
+        ###########
+        # Try a few different regex-based searches on the given abbreviation. They are ordered by the approximate likelihood of their
+        # returning the intended result. Hence if any prior search returns at least one match, we forego the latter searches.
+        ###########
+
+        ######
+        # Search #0: An old, simple technique no longer used: Post-saturate the abbreviated name with dot-asterisks
+        # e.g. aBcD becomes a.*B.*c.*D.*
+
+        ######
+        # Search #1: Apply the list of custom expansion rules to the given abbreviation
+
+        if ((numCandidates == 0)); then    # not necessary, but added this for readability / uniformity with the code below.
+
+            # First create a sequence of words marked as either atomic or expandable.  (no mark -> atomic,  dot mark -> expandable)
+            set -f
+            expandFully "$nameAbbr" "$macroSubstitutionList"
+            _expand_nameRegex=$g_returnString
+
+            # If there are expandable abbreviations, work with them...
+            if [[ "$_expand_nameRegex" =~ (^| )[^.] ]]; then
+
+                # Patch together the full regex from the sequence of words:
+                #   - If a word was expanded (i.e. is not pre-pended with a dot), preserve it as-is.
+                #   - Else break it up letter-by-letter and transform lowercase letters into case-agnostic particles.
+                #   - Connect all resulting fragments with wildcards.
+
+                n=($_expand_nameRegex)
+                for ((i=0; i<${#n[@]}; i++)); do
+                    if [[ ${n[i]} =~ ^\. ]]; then
+                        #n[i]=${n[i]:1}
+                        new[i]=${n[i]:1:1}".*"
+                        for ((l=2; l<${#n[i]}; l++)); do
+                            ltr=${n[i]:l:1}
+                            if [[ "$ltr" =~ [a-z] ]]; then
+                                new[i]+="["${ltr^^}$ltr"].*"
+                            else
+                                new[i]+=$ltr".*"
+                            fi
+                        done
+                    else
+                        new[i]=${n[i]}".*"
+                    fi
+                done
+
+                OLDFS=$IFS; IFS=""
+                _expand_nameRegex="${new[*]}"
+                IFS=$OLDFS
+
+                #TODO: Move this out one level?
+                set +f
+
+                # Now we extract the matching entries from the full list of candidates
+                $matchFinderCommand
+                numCandidates=${#_expand_matchList[@]}
+            fi
+        fi  # end of the first expansion/match attempt
+
+        ######
+        # Search #2: Adjust the regex by post-saturating the abbreviated name with ".*"
+        # but treat capitals literally, smalls agnostically, and leading asterisks specially,
+        # and search again; e.g. aBc becomes [Aa].*B.*[Cc].*   and   *aBcD becomes .*[Aa].*B.*[Cc].*D.*
+
+        if ((numCandidates == 0)); then
+
+            _expand_nameRegex=""; upper=${nameAbbr^^}
+            for ((i=0; i<${#nameAbbr}; i++)); do
+
+                # Leading asterisk ==> ".*"
+                if [[ $i == 0 && $nameAbbr =~ ^\* ]]; then
+                    _expand_nameRegex+=.\*
+
+                # X ==> "X.*"
+                elif [[ ${nameAbbr:$i:1} == ${upper:$i:1} ]]; then
+                    _expand_nameRegex+=${upper:i:1}".*"
+
+                # x ==> "[Xx].*"
+                else _expand_nameRegex+="["${upper:$i:1}${nameAbbr:$i:1}"].*"
+                fi
+            done
+
+            # Extract the matching entries from the full list of candidates, matching against the modified regex.
+            $matchFinderCommand
+            numCandidates="${#_expand_matchList[@]}"
+        fi
+
+        #####
+        # Search #3: If the abbreviation contains capitals, then the regex contains [A-Z]"." pairs. Relax these to mixed-case and try again.
+
+        if ((numCandidates == 0)); then
+            if [[ $nameAbbr =~ [A-Z] ]]; then
+                while [[ $_expand_nameRegex =~ ([A-Z][.]) ]]; do
+                    newPart=${BASH_REMATCH[1]:0:1}
+                    newPart="["$newPart${newPart,,}"]."
+                    _expand_nameRegex=${_expand_nameRegex/${BASH_REMATCH[1]}/$newPart}
+                done
+
+                # Extract the matching entries from the full list of candidates, matching against the modified regex.
+                $matchFinderCommand
+                numCandidates="${#_expand_matchList[@]}"
+            fi
+        fi
+
+        # If all of the above techniques failed, put the name in single quotes and set an error code
+        # so the caller can either pass it through silently as a string literal or handle it as he desires.
+        # TODO: Quick fix for now: DO NOT quote the arg. Let it be evaluated. Eventually, let the caller try to make better sense of it
+        # TODO: by trying to parse out function names, embedded column names, etc.
+        if ((numCandidates == 0)); then
+            finalNames[nameCount]=$nameAbbr    #"'$nameAbbr'"
+            finalCodes[nameCount]=YY
+            ((nameCount++))
+            continue
+        fi
+
+        # If any of the above techniques gave us a single definitive answer, then use it
+        if ((numCandidates == 1)); then
+            matchingLine=${_expand_matchList[0]}
+
+        # If multiple matches turned up, resolve the ambiguity
+        elif ((numCandidates > 1)); then
+
+            local currCandidate
+            local candidateIndex=0
+            abbrLength=${#nameAbbr}
+            abbrCapitals=${nameAbbr//[^A-Z]/}
+            unset capitalMatchIndices
+            local capitalMatchesCount=0
+
+            # If one of the candidates is exactly the same as the "abbreviation" (i.e. it's not really an abbreviation), we will choose that one unconditionally.
+            # More generally, if some candidate is an exact match when we look only at the capital letters, we will prefer it to any other candidates.
+            for currCandidate in "${_expand_matchList[@]}"; do
+
+                matchingName=${currCandidate%%$'\n'*}  # take the first piece of the candidate record (and the only piece if we're working with table names)
+
+                # To detect exact matches it is enough to compare the lengths of the abbreviation and the matching candidate,
+                # since the match algorithm is monotone-expanding.
+                if [[ $abbrLength == ${#matchingName} ]]; then
+                    matchingLine=$currCandidate
+                    break
+                fi
+
+                # Identify non-exact matches which match exactly in their capital letters. This is our criterion when there are no perfect matches.
+                matchCapitals=${matchingName//[^A-Z]/}
+                if [[ "$abbrCapitals" == "$matchCapitals" ]]; then
+                    ((capitalMatchIndices[capitalMatchesCount++] = candidateIndex))
+                fi
+
+                ((candidateIndex++))
+            done
+
+            # Prune down the list of matches based on the above analysis
+            if [[ -z $matchingLine ]]; then
+                if ((capitalMatchesCount == 1)); then
+                    matchingLine=${_expand_matchList[capitalMatchIndices[0]]}
+                elif ((capitalMatchesCount > 1)); then
+                    # Deflate the candidate matches list
+                    for ((candidateIndex=0; candidateIndex < capitalMatchesCount; candidateIndex++)); do
+                        _expand_matchList[candidateIndex]=${_expand_matchList[capitalMatchIndices[candidateIndex]]}
+                    done
+                    while ((candidateIndex < numCandidates)); do
+                        unset _expand_matchList[candidateIndex++]
+                    done
+                fi
+            fi
+
+            # If we cannot identify a single "best" match, we ask the user to choose one from the list
+            if [[ -z $matchingLine ]]; then
+                echo Please enter a number for \"$nameAbbr\": > /dev/stderr
+                select matchingName in ${_expand_matchList[@]%%$delim*}; do    # This array-chop shd work for both tables and columns
+                    if [[ -z $matchingName ]]; then
+                        # Keep trying until we get a response.
+                        echo ERROR: Please choose a number from the list. > /dev/stderr
+                    else
+                      isArgOfType $REPLY integer    ## REPLY = special shell variable set by select
+                      if (($?)); then
+                        matchingLine=${_expand_matchList[REPLY-1]}
+                        break
+                      else
+                        echo Alphabetic entries: Feature not yet implemented. Ask about recursive expansion. > /dev/stderr
+                        # After the following recursive call, try the following:
+                        # local answer=$(expandColumnNames "$1" $REPLY)
+                        # finalNames[i] = answer line 1
+                        # finalCodes[i] = answer line 2
+                        # and jump to the next arg in the comma'd list
+                      fi
+                    fi
+                done
+            fi
+        fi
+
+        $finalizeExpandedNameCommand "$matchingLine"
+
+        ((nameCount++))
+    done  # end loop over list of (abbreviated) column names
+
+    # Return the results as comma-delimited lists
+    #FIXME: The "blob" section in setColumnCode() will break this since it will produce embedded commas!!!
+    OLDFS="$IFS";IFS=$','
+    g_returnString="${finalNames[*]}"
+    g_returnString+=$delim
+    g_returnString+="${finalCodes[*]}"
+    IFS="$OLDFS"
+
+    return $retVal
+}
+
+
+#####################################################################################################
+#####################################################################################################
+
+finalizeExpandedTableName()
+{
+    finalNames[nameCount]="$1"
+    finalCodes[nameCount]=""
+}
+
+finalizeExpandedColumnName()
+{
+    local record="$1"
+
+    [[ $record =~ $threeValueParser ]]
+    columnName=${BASH_REMATCH[1]}
+    columnDesc=${BASH_REMATCH[2]}
+    columnDefault=${BASH_REMATCH[3]}
+
+    setColumnCode $columnName $columnDesc $columnDefault
+
+    finalNames[nameCount]=${g_returnString:3}
+    finalCodes[nameCount]=${g_returnString:0:2}
+}
+
+
+#####################################################################################################
+# generate{Table,Column}NameMatches <no args>
+# Compares a regex against a list of table or column names (with supporting information) to build a list of candidates
+#####################################################################################################
+function generateTableNameMatches()
+{
+    OLDFS=$IFS; IFS=$'\n'
+    i=0
+    for line in ${g_masterList#*$'\n'};do   # Skip the list header
+
+        # If this table name (column 0 - the only column) matches the regex then take it, else skip this line
+        [[ ${line:${_expand_columnOffsets[0]}:${_expand_columnWidths[0]}} =~ ^($_expand_nameRegex) ]]
+        if [[ $? != 0 ]]; then continue; fi
+        _expand_matchList[i]+=${BASH_REMATCH[1]%% *}  # Strip trailing spaces
+        ((i++))
+    done
+    IFS=$OLDFS
+}
+
+function generateColumnNameMatches()
+{
+    # Using the name regex, pull the matching column names plus their type descriptions and default values from the full table description
+    # TODO: For now we will ignore the first column, the table name. In a multi-table scenario we would need it.
+
+    OLDFS=$IFS; IFS=$'\n'
+    i=0
+    for line in ${g_masterList#*$'\n'}; do  # Skip the list header
+
+        # Speedup by ruling out non-first-letter matches? Havent tested this:
+        #[[ ${_expand_nameRegex:1:2} =~ ${line:${_expand_columnOffsets[1]}:1} ]]    # et cetera
+
+        # If column 2, the column name, matches the regex then take it, else skip this line
+        [[ ${line:${_expand_columnOffsets[1]}:${_expand_columnWidths[1]}} =~ ^($_expand_nameRegex) ]]
+        if [[ $? != 0 ]]; then continue; fi
+        _expand_matchList[i]+=${BASH_REMATCH[1]%% *}  # Strip trailing spaces
+
+        # Take the first word of column 3, the column type. (We sometimes have "int(n) unsigned" but we want just "int(n)".)
+        col=${line:${_expand_columnOffsets[2]}:${_expand_columnWidths[2]}}}
+        _expand_matchList[i]+=$delim${col%% *}
+
+        # Take column 4, the column default and do not throw out empty strings
+        col=${line:${_expand_columnOffsets[3]}}
+        _expand_matchList[i]+=$delim${col%% *} # Strip trailing spaces
+        ((i++))
+    done
+    IFS=$OLDFS
+}
+
+#####################################################################################################
+# setup{Table,Column}InfoParser  <no arguments>
+# Helper functions for expandAbbreviatedNames
+#####################################################################################################
+function setupTableInfoParser()
+{
+    unset _expand_columnOffsets _expand_columnWidths
+
+    # A table names list is a single column listing the table names. Compare to the columns list which has several columns.
+    [[ ${g_masterList:1} =~ .([^$'\n']*)$'\n' ]]
+    _expand_columnOffsets[0]=1                      # one space in front
+    _expand_columnWidths[0]=${#BASH_REMATCH[1]}     # distance to end of line
+}
+
+function setupColumnInfoParser()
+{
+    unset _expand_columnOffsets _expand_columnWidths
+
+    # A column list is multi-column and lists the column names and information about them.
+    # Since we will use the fact that the list is fixed width, let's figure out the column offsets
+    [[ ${g_masterList:11} =~ ^((([ ]+)column_name[ ]+)column_type[ ]+)column_default ]]
+    _expand_columnOffsets[0]=1                                # table_name's offset
+    _expand_columnOffsets[1]=$((11+${#BASH_REMATCH[3]}))      # add 11 to account for " "table_name in front
+    _expand_columnOffsets[2]=$((11+${#BASH_REMATCH[2]}))
+    _expand_columnOffsets[3]=$((11+${#BASH_REMATCH[1]}))
+    _expand_columnWidths[0]=$((_expand_columnOffsets[1]-_expand_columnOffsets[0]))
+    _expand_columnWidths[1]=$((_expand_columnOffsets[2]-_expand_columnOffsets[1]))
+    _expand_columnWidths[2]=$((_expand_columnOffsets[3]-_expand_columnOffsets[2]))
+    #_expand_columnWidths[3]=$((${distance to '\n'}-_expand_columnOffsets[3]))
+}
+
+#####################################################################################################
+# setColumnCode  columnName  columnTypeDesc  columnDefault
+# Given some basic column information, returns a specially-encoded two-character description of the column
+# This is used e.g. to indicate whether a column's non-NULL values need quoting
+#####################################################################################################
+function setColumnCode()
+{
+    local columnName=$1
+    local columnDesc=$2
+    local columnDefault=$3
+    local columnCode
+
+    # Convert the column description into a code for subsequent processing
+    # Currently we use a two-character code: a quote indicator followed by a detail indicator
+
+    local numericDescRegex="(int)|(^decimal)"
+    if [[ "$columnDesc" =~ $numericDescRegex ]]; then
+
+        # Pick out floats (non-integer numerics) -- i.e., descs that match "decimal" not "int"
+        if [[ -n ${BASH_REMATCH[2]} ]]; then
+            columnCode=0f         # meaning: do not quote, and is a floating point value
+
+        # Pick out "secret" booleans
+        elif [[ ( $columnDesc == "tinyint(1)" && "$columnDefault" =~ ^[01]$ ) || ( $columnDesc =~ smallint && "$columnDefault" == 1) ]]; then
+            columnCode=01         # meaning: do not quote, and is a 0-1 boolean
+
+        # Pick out "true" integer types
+        else
+            columnCode=0i         # meaning: do not quote, and is an integer value
+        fi
+    else
+        if [[ $columnDesc == "char(1)" && "$columnDefault" =~ ^[tf]$ ]]; then
+            columnCode=qt         # meaning: quote it, and is a t-f boolean
+        elif [[ $columnDesc == timestamp ]]; then
+            columnCode=qs         # meaning: quote it, and is a timestamp
+        elif [[ $columnDesc == blob ]]; then
+            columnCode=qb         # meaning: it is a blob; quoting is n/a, just use q for consistency, and represent it as NULL-or-not
+            columnName="IF("${columnName}" IS NULL, 'NULL', '<blob>') as "${columnName}
+        else
+            columnCode=qa         # meaning: quote it, and is a regular alphabetic (symbolic, etc.) value
+        fi
+    fi
+
+    g_returnString=$columnCode:$columnName
+}
+
+###################################################################################
+# isOptionOn/Off  option  optionSet  [-show]
+# Looks for the specified option(s) in the (colon-delimited and -surrounded) optionSet
+###################################################################################
+function isOptionOn()
+{
+    local regex=":($1):"
+    g_returnString=""
+
+    if [[ "${2,,}" =~ ${regex,,} ]]; then   # Lowercase-ify the arg and the regex to get case-agnosticism
+        if [[ "$3" == -show ]]; then
+            g_returnString=${BASH_REMATCH[1]}
+        fi
+        return 1
+    else
+        return 0
+    fi
+}
+
+function isOptionOff()
+{
+    isOptionOn "$@"
+    return $(( ! $? ))
+}
+
+##########################################################################################
+# parseOutOptions  command_line...
+# Given a set of arguments, this function constructs and returns two strings in one:
+#  (1) A colon-delimited string listing the OPTIONS detected. These are the arguments that begin
+#      with a "-" sign, plus the special "*" option which we encode as 'selectAll'.
+#  (2) A symbolic list of the args that are not options, e.g. if $1 and $4 are not options, then
+#      this string will be set to "${1} ${4}" (where all characters between quotes are literal).
+#      This enables the caller to easily remove the option arguments from his command line
+#      by calling the "set" builtin.
+# Return code = number of option arguments detected
+##########################################################################################
+function parseOutOptions()
+{
+    local OPTION_LIST retArgs retCode
+    local optionsRegex="(^| )(-|[*]( |$))"
+    local arg nextArg
+
+    # Quick exit if there are no options
+    if [[ ! "$@" =~ $optionsRegex ]]; then return 0; fi
+
+    for ((idx=1; idx<=$#; idx++)); do
+        eval arg=\$$idx      ## see Bash manual, "Indirect References"
+
+        # Identify the "normal" option arguments; "-" plus the option name and sometimes a value
+        if [[ "$arg" =~ ^-[[:alnum:]] ]]; then
+
+            # For options having settable values we accept 3 forms:  -op=Val  -opVal  or  -op Val
+            arg=${arg/=/}                         # Squeeze out the = sign
+            if [[ $arg =~ ^-[Ll]$ ]]; then        # Squeeze out the space, i.e. add the following argument
+                ((++idx))
+                eval newArg=\$$idx
+                if [[ ! $newArg =~ ^[0-9]+$ ]]; then
+                    echo Error: Limit must be numeric. > /dev/stderr
+                    exit 20
+                fi
+                arg+=$newArg
+            fi
+
+            # Add the option to the internal list
+            OPTION_LIST=$OPTION_LIST":${arg//-/}"
+            ((retCode++))
+
+        # Interpret the special "*" argument as the selectAll option
+        elif [[ "$arg" == "*" ]]; then
+            OPTION_LIST=$OPTION_LIST":selectAll"
+            ((retCode++))
+
+        # Otherwise the argument is not an option.
+        else
+            retArgs=$retArgs'"${'$idx'}" '
+        fi
+    done
+
+    retArgs="${retArgs% }"
+
+    # Make the options case-agnostic by always storing them in lowercase
+    g_returnString=${OPTION_LIST,,}":"
+    g_returnString+=$delim
+    g_returnString+=$retArgs
+
+    return $retCode
+}
+
+##########################################################################################
+# expandValueSet  valueSet  valueType
+#
+# Expands two types of possibly-abbreviated value sets into their full-length equivalents:
+#   (1) ranges (numeric or date) --> pairs of interval endpoints
+#         e.g.  "100200300-99" --> "100200300 <delim> 100200399"
+#               "2013/10-12" --> "2013-10-01 <delim> 2013-12-31"   (use / within dates, - to delimit ranges)
+#               "2013/10/5-20" --> "2013-10-5 <delim> 2013-10-20"
+#   (2) prefix lists --> normal lists
+#         e.g.  "1002003:00,99" --> "100200300,100200399"   (use : after prefix, commas to delimit)
+##########################################################################################
+function expandValueSet()
+{
+    local first=${1%[-:]*}
+    local second=${1#*[-:]}
+    local filler='???????????????'
+    declare -r NUM_RANGE=1 DATE_RANGE=2 PREFIX_LIST=3
+    local firstArg secondArg response
+
+    if (($2 == NUM_RANGE)); then
+        # greater/less than the parsed-out values
+        firstArg=$first
+        if [[ ${#second} -lt ${#first} ]]; then
+            secondArg=${first/%${filler:0:${#second}}/$second}
+        else
+            secondArg=$second
+        fi
+        response=$firstArg
+        response+=$delim
+        response+=$secondArg
+
+    elif (($2 == DATE_RANGE)); then
+        # Base the parsing on the slash count before/after hyphen:
+        # two before ...
+        if [[ $first =~ /[[:digit:]]+/ ]]; then
+            firstArg=$first
+            # two after ...
+            if [[ $second =~ /[[:digit:]]+/ ]]; then
+                secondArg=$second
+            # one after ...
+            elif [[ $second =~ / ]]; then
+                secondArg=${first%%/*}/$second
+            # none after ...
+            else
+                secondArg=${first%/*}/$second
+            fi
+        # one before ...
+        elif [[ $first =~ / ]]; then
+            firstArg=$first/01
+            # one after ...
+            if [[ $second =~ / ]]; then
+                secondArg=$second/31
+            # none after but there is a number ...
+            elif [[ $second =~ [0-9] ]]; then
+                secondArg=${first%/*}/$second/31
+            # second is blank altogether ...
+            else
+                secondArg=$first/31
+            fi
+        else
+            response="Error in date range."
+        fi
+
+        # Turn /'s into -'s for SQL compatibility
+        firstArg=${firstArg//\//-}
+        secondArg=${secondArg//\//-}
+
+        response=$firstArg
+        response+=$delim
+        response+=$secondArg
+
+    elif (($2 == PREFIX_LIST)); then
+        response=:$second
+        response=${response//[:,]/,$first}
+        response=${response#,}
+    else
+        response="Not a range or a prefix list."
+    fi
+
+    g_returnString=$response
+}
+
+##########################################################################################
+# parseOutSets  command_line...
+#
+# Given a list of arguments, this function constructs and returns a pseudo-SET clause for use
+# in an UPDATE stmt, where the values are delimited with special markers;
+# a comma-list of the (abbreviated) column names in the clause; and a symbolic list of the remaining (non-SET-type) arguments
+#
+# Note: A SET-type argument is a "name-op-value" tuple where "op" is :=
+#
+# Returns the number of SET particles detected
+##########################################################################################
+function parseOutSets()
+{
+    local SET_CLAUSE abbrList retArgs name value
+    declare -i haveSets=0
+
+    for ((idx=1; idx<=$#; idx++)); do
+        eval arg=\$$idx      ## see Bash manual, "Indirect References"
+
+        # If the arg is a SET-type arg...
+        if [[ "$arg" =~ [[:alnum:]]${updateOperator}. ]]; then
+            # Construct a proto-SET clause using markers to identify the values; "column:=value" becomes "column = @value@,"
+            SET_CLAUSE+=" ${arg/${updateOperator}/ = $setClauseMarker}$setClauseMarker,"
+            # Parse out the column abbr from the supplied argument
+            abbrList=$abbrList${arg%${updateOperator}*},
+            ((haveSets++))
+        else
+            retArgs=$retArgs'"${'$idx'}" '
+        fi
+    done
+
+    SET_CLAUSE=${SET_CLAUSE%,}
+    abbrList=${abbrList%,}
+
+    g_returnString=${SET_CLAUSE:-$placeholderForEmpty}
+    g_returnString+=$delim
+    g_returnString+=${abbrList:-$placeholderForEmpty}
+    g_returnString+=$delim
+    g_returnString+=$retArgs
+
+    return $haveSets
+}
+
+##########################################################################################
+# parseOutSelects  command_line...
+#
+# Given a set of arguments, this function constructs and returns two strings representing
+# the pre- and post-selected columns, plus a symbolic list of the remaining (non-selection) arguments
+#
+# Selection-type arguments can be singletons or comma-separated lists in the following forms:
+#    +0 or +00       to clear most or all of the default columns
+#    +1columnName    to prepend a column
+#    +columnName     to append a column
+#  #FUTURE:  ++groupName     to append a column class (the caller needs to expand and append)
+#
+# Return codes:
+#  retCode_ordinarySelection    if selections are detected and no special flags are among them
+#  retCode_clearAllSelections   if "00"/clearAll is detected,
+#  retCode_selectMainColumnOnly if "0"/clearMost is detected,
+#  retCode_noSelection          if no selection arguments are detected
+##########################################################################################
+function parseOutSelects()
+{
+    local PRESELECTION_LIST POSTSELECTION_LIST retArgs
+    declare -i retCode=$retCode_ordinarySelection
+
+    local zeroInListRegex="(^|,)(00?)($|,)"     # a single or double zero within a comma-separated list
+    local groupNameRegex="^\+"              # begins with literal "+".
+    local selectionsRegex="(^| )\+"
+
+    # Quickly exit if there are no selection-type args
+    if [[ ! "$@" =~ $selectionsRegex ]]; then return 0; fi
+
+    for ((idx=1; idx<=$#; idx++)); do
+        eval arg=\$$idx      ## see Bash manual, "Indirect References"
+        eval nextArg=\$$((idx+1))
+
+        isArgOfType "$arg" selection
+        if (($?)); then
+            # Strip off plus sign
+            value=${arg#+}
+
+            # Handle "+0(0)?" / "+ 0(0)?" by setting the clear-defaults flag and erasing the fake zero "column".
+            # The caller will then have to clear the default selections since this function cannot access them
+            # (If 0 is embedded in a list we will handle it below, within the list)
+            if [[ $value =~ ^00?$ || ( $value == "" && "$nextArg" =~ ^00?$ ) ]]; then
+                if [[ -z $value ]]; then shift; fi
+                : ${value:=$nextArg}
+                if [[ $value = "00" ]]; then
+                    retCode=$retCode_clearAllSelections
+                else
+                    retCode=$retCode_selectMainColumnOnly
+                fi
+
+            # Handle "+1value" / "+1 value". If the value is or contains a "0" column, remove it and set the return value.
+            # In all cases, add whatever remains to the selection list
+            elif [[ $value =~ ^1 ]]; then
+                value=${value#1}
+                if [[ -z $value ]]; then shift; fi
+                : ${value:=$nextArg}
+                if [[ $value =~ $zeroInListRegex ]]; then
+                    retCode=$retCode_selectMainColumnOnly
+                    if [[ (${BASH_REMATCH[1]} == ,) && (${BASH_REMATCH[3]} == ,) ]]; then
+                        value=${value/${BASH_REMATCH[0]}/,}
+                    else
+                        value=${value/${BASH_REMATCH[0]}/}
+                    fi
+                fi
+                PRESELECTION_LIST="$PRESELECTION_LIST"$value,
+
+            # Handle "++1value" / "++value"
+            elif [[ $value =~ $groupNameRegex ]]; then
+                # Leave the remaining plus sign there to tell caller this is a group name
+                if [[ ${value:1:0} == 1 ]]; then
+                    if [[ -n ${value:2:0} ]]; then
+                        PRESELECTION_LIST="$PRESELECTION_LIST"${value/1/},     # Leave + but remove 1
+                    else
+                        PRESELECTION_LIST=${PRESELECTION_LIST}"+"$nextArg,
+                        shift
+                    fi
+                else
+                    if [[ -n ${value:1:0} ]]; then
+                        POSTSELECTION_LIST="$POSTSELECTION_LIST",$value
+                    else
+                        POSTSELECTION_LIST=${POSTSELECTION_LIST}",+"$nextArg
+                        shift
+                    fi
+                fi
+
+            # Handle "+value" / "+ value". This can include value lists which, if they contain a "0", must be handled
+            # by removing the 0 and setting the return value.
+            else
+                if [[ -z $value ]]; then shift; fi
+                : ${value:=$nextArg}
+                if [[ $value =~ $zeroInListRegex ]]; then
+                    retCode=${#BASH_REMATCH[2]}
+                    if [[ (${BASH_REMATCH[1]} == ,) && (${BASH_REMATCH[3]} == ,) ]]; then
+                        value=${value/${BASH_REMATCH[0]}/,}
+                    else
+                        value=${value/${BASH_REMATCH[0]}/}
+                    fi
+                fi
+                POSTSELECTION_LIST="$POSTSELECTION_LIST",$value
+            fi
+
+        # The arg is not a selection. Add it to the return list.
+        else
+            retArgs=$retArgs'"${'$idx'}" '
+        fi
+
+    done
+
+    g_returnString=${PRESELECTION_LIST:-$placeholderForEmpty}
+    g_returnString+=$delim
+    g_returnString+=${POSTSELECTION_LIST:-$placeholderForEmpty}
+    g_returnString+=$delim
+    g_returnString+=$retArgs
+
+    return $retCode
+}
+
+##########################################################################################
+# generateWhereClause  [givenWhereParticles ...]
+#
+# Builds the core WHERE-clause from the supplied arguments. These can be in basic or compound form.
+#
+# The basic-form arguments are so-called "NCV ((name-)comparator-)value" expressions. If the name is
+# omitted it will be inferred based on the global settings g_default{Num,Alnum}Cols. If the comparator
+# is also omitted it will default to "=". Examples of NCV expressions include:
+#
+#    n,c,v all present:            column=y   column!=y
+#    n omitted:                    <=y   =x,y,z
+#    n,c omitted:                  x   x,y,z   x-y
+#
+# Compound-form arguments are boolean-logical combinations of the above.
+##########################################################################################
+function generateWhereClause()
+{
+    # Return data
+    local WHERE_CLAUSE=$placeholderForEmpty
+    local valuesToSortBy columnToSortBy
+
+    # Helper variables
+    declare -i numWheres=0 numDftNumCols=0 numDftAlnumCols=0
+    declare -a whereComponent
+    local valueType sql
+
+    # Array-ify the column name inference rules
+    declare -a defaultNumCols defaultAlnumCols dftNumCodes dftAlnumCodes columnNames columnCodes      # can't declare and assign arrays on the same line
+    OLDFS="$IFS"; IFS=$','
+    defaultNumCols=($g_defaultNums)
+    dftNumCodes=($g_defaultNumCodes)
+    defaultAlnumCols=($g_defaultAlnums)
+    dftAlnumCodes=($g_defaultAlnumCodes)
+    IFS="$OLDFS"
+
+    local _wheres_bIsList _wheres_bIncludesNull _wheres_bIsRange _wheres_bIsNameGiven
+    local name code comparator value
+
+    # In this subroutine we expect value-type arguments only; options and selection-type arguments should already have been filtered out.
+    # Our arguments can be either name-comparator-value, comparator-value or just a value. If an argument lacks an explicit comparator,
+    # a default of "=" is assumed. If it lacks a column name, the name(s) is (are) taken from one of the globals g_default{Num,Alnum}Cols;
+    # a best-guess is made based on the value provided. Ultimately we aim to produce a correct WHERE clause as a sequence of fragments
+    # joined together by either ANDs or ORs as specified by the user.
+
+    # Set the highest-level conjunction, defaulting to AND.
+    isOptionOn 'o|or' $OPTIONS
+    if (($?)); then
+        g_mainConjunction=OR
+    else
+        isOptionOn 'a|and' $OPTIONS
+        if (($?)); then
+            g_mainConjunction=AND
+        fi
+    fi
+
+    # Load the parser function, just once
+    if [[ $g_haveParser == $FALSE ]]; then
+        g_haveParser=$TRUE
+        source $TQL_HOME/parse_functions  ## TODO: Dangerous variable scoping issues here!!! This should be moved to the caller.
+    fi
+
+#TODO: Since we will expand() the n-c-v particles below, we need to remove the expand() invocation way up above and the
+#TODO: expanded substitution(s) down here. This will change the behavior of the functions involved, so any supporting script that
+#TODO: calls these functions will have to be revisited.
+
+    # Handle each argument in turn
+    while [[ -n $1 ]]; do
+
+        # Lexically analyze the argument, encoding the analysis with suitable markup
+        parseWhereArgument "$1"; parsedStr=$g_returnString
+
+        # Walk the lexed string forward, interpreting the markup as we go. We use it to set up the skeletal framework of the SQL
+        # and we expand() every [[name-]cmp-]value construct to flesh out the SQL framework into a complete subclause
+
+        local rhs=$parsedStr
+        local sql=" $g_mainConjunction ("   # this outermost '(' ensures the "main" conjunctions have least precedence
+
+        # Convert the parsed argument into SQL token by token
+        while [[ -n $rhs ]]; do
+
+            # Pull the next token from the parsed string
+
+            # TODO: Will everything besides spaces necessarily be tokenized? We assume so for now...
+            # Handle uncontained spaces
+            if [[ $rhs =~ ^\ (.*) ]]; then
+                sql+=" "
+                rhs=${BASH_REMATCH[1]}
+                continue
+            fi
+
+            # NCV expressions
+            if [[ $rhs =~ ^${markupIndicator}NCV([0-9]+) ]]; then
+                ncvCounter=${BASH_REMATCH[1]}
+                [[ $rhs =~ ^${BASH_REMATCH[0]}$markupIndicator(.*)$markupIndicator/([NC]*V)$ncvCounter$markupIndicator(.*) ]]
+                ncv=${BASH_REMATCH[1]}
+                ncvType=${BASH_REMATCH[2]}
+                rhs=${BASH_REMATCH[3]}
+
+                # "Clean up" the NCV. Open up with "(" or "NOT (" as appropriate.
+                normalizeNCVConstruct $ncvType "$ncv"; _wheres_bIsNameGiven=$?
+
+                # We build the SQL fragment for the current NCV construct. This means deciding when to quote a value, and constructing
+                # a grammatically correct piece of SQL based on whether the value is a singleton, list, interval, NULL, regex, regex list,
+                # or a negation of one of these. In addition, we massage the values where necessary because mysql is picky about
+                # certain formatting issues, e.g. floats cannot lead with a decimal point and timestamps must be laid out rather carefully.
+
+                # Invoke the main SQL generation code ...
+                # Regex lists or singletons --> "AND/OR (name LIKE 'value1' OR name LIKE 'value2')"
+                # Literal lists             --> "AND/OR name IN (value1, value2, value3)"
+                # Literal singletons        --> "AND/OR name comparator value"
+
+        #### TODO: Try some error checking on the values, based on stuff like: code 0f --> float  /   code 0i --> integer
+        #### TODO: But not necessarily right here.
+
+                # Does this name-cmp-value argument have an explicit name?
+                if ((_wheres_bIsNameGiven)); then
+                    processNamedNCVArgument
+
+                # If not, the argument is a value (possibly preceded by comparator) without a name.
+                # Make the correct inferences about the implied column name(s) and comparator and construct the SQL.
+                else
+                    processUnnamedNCVArgument
+                fi
+
+                sql+=')'   # Needed for complex NCVs like regex lists; superfluous for simple ones
+                continue
+
+            # Left parentheses
+            elif [[ $rhs =~ ^$markupIndicator$g_leftParen([0-9]+)$markupIndicator(.*) ]]; then
+                sql+="("
+                nestingLevel=${BASH_REMATCH[1]}      # not used yet, but maybe some day
+                rhs=${BASH_REMATCH[2]}
+                continue
+
+            # Right parentheses
+            elif [[ $rhs =~ ^$markupIndicator$g_rightParen([0-9]+)$markupIndicator(.*) ]]; then
+                sql+=")"
+                nestingLevel=${BASH_REMATCH[1]}
+                rhs=${BASH_REMATCH[2]}
+                continue
+            fi
+
+            # Logical operators
+            if [[ $rhs =~ ^${markupIndicator}AND$markupIndicator(.*) ]]; then
+                sql+=" AND"
+                rhs=${BASH_REMATCH[1]}
+                continue
+            elif [[ $rhs =~ ^${markupIndicator}OR$markupIndicator(.*) ]]; then
+                sql+=" OR"
+                rhs=${BASH_REMATCH[1]}
+                continue
+            fi
+
+            # Uncontained/unbound literals
+            #if [[ $rhs =~ ^[\"\'] ]]; then
+            if [[ $rhs =~ ^${markupIndicator}L([^$markupIndicator]+)L${markupIndicator}(.*) ]]; then
+                sql+=${BASH_REMATCH[1]}    # append the quoted literal
+                rhs=${BASH_REMATCH[2]}
+                continue
+            fi
+
+        done
+
+        # Finalize the subclause for this argument
+        whereComponent[numWheres++]=$sql")"
+
+        # Get ready to process the next argument
+        shift
+    done
+
+    # Assemble the WHERE clause from its components
+    if ((numWheres > 0)); then
+        WHERE_CLAUSE="${whereComponent[@]}"
+    fi
+
+    # Pass back all necessary information to the caller
+    g_returnString=$WHERE_CLAUSE
+    g_returnString+=$delim
+    g_returnString+=$columnToSortBy:$valuesToSortBy
+
+    return 0
+}
+
+
+########################################################################################################
+# normalizeNCVConstruct  NCVtype NCVargument
+# A major subroutine of generateWhereClause() that makes sense of a single NCV-argument (Name-Comparator-Value)
+# and adjusts its components to a uniform, easily-managed format:
+#    Expands embedded filenames to the files' content in the form of comma-separated lists
+#    Expands abbreviated ranges and prefix lists to full value pairs and lists, respectively
+#    Segregates NULLs and sets a special flag for subsequent special handling
+#    Factors out negative comparators as NOTs plus the inverse comparators
+# This subroutine does not generate any SQL except for a prefix of either "(" or "NOT (" as appropriate.
+########################################################################################################
+function normalizeNCVConstruct()
+{
+    local msg=""
+    local br2 isNameGiven
+    local ncvType=$1
+
+    ((_wheres_bIsList = FALSE))
+    ((_wheres_bIncludesNull = FALSE))
+    ((_wheres_bIsRange = FALSE))
+
+    # Break down the NCV into name, comparator (defaulting to "=") and value. Only the value is guaranteed to be present.
+    [[ $2 =~ ^([^=\<\!\>]*)([=\<\!\>]*)(.*) ]]
+    if [[ -z ${BASH_REMATCH[2]} ]]; then
+        comparator='='
+        value=${BASH_REMATCH[1]}
+    else
+        name=${BASH_REMATCH[1]}
+        comparator=${BASH_REMATCH[2]}
+        value=${BASH_REMATCH[3]}
+    fi
+    isNameGiven=${#name}
+
+    # If the comparator is negative ('<>' or '!=') then factor out a NOT and invert the comparator
+    isNegativeComparator "$comparator"
+    if (($?)); then
+        sql+=" NOT ("  # The '(' is needed for e.g. regex lists; is superfluous for simple NCVs
+        comparator='='
+    else
+        sql+=" ("
+    fi
+
+    # Expand any abbreviated names
+    if ((isNameGiven)); then
+        expandColumnNames "$TABLE_NAMES" "$name"
+        name=${g_returnString%$delim*}      # this is the post-processed (expanded) name
+        code=${g_returnString#*$delim}      # the code tells us how to treat the value
+    fi
+
+    # Load file- and stdin-sourced lists into regular list values and set the "is list" indicator.
+    if [[ "$value" =~ $embeddedFileRegex ]]; then
+        ((_wheres_bIsList = TRUE))
+        # If the list is stdin-sourced, prompt the user for the content
+        if [[ "${BASH_REMATCH[0]}" == @@ ]]; then
+            if ((isNameGiven)); then msg="for '$name' "; fi
+            echo '>>> Your values '${msg:-} '(finish with <enter> <ctrl-D>):' > /dev/stderr
+        fi
+        # Load and strip the values. Some extra cleanup is needed that doesn't apply to cmdline lists.
+        loadFileAsCommaList "${BASH_REMATCH[1]:-/dev/stdin}"
+        value=$g_returnString
+    else
+        isArgOfType "$value" list
+        _wheres_bIsList=$?
+    fi
+
+    # If the value includes a NULL marker, set a flag that we will use to treat NULLs in the necessary special way
+    # without "disturbing" ordinary values.
+    if [[ $value =~ (^|,)$NULL_INDICATOR(,|$) ]]; then
+
+        # Set the NULL flag.
+        ((_wheres_bIncludesNull = TRUE))
+
+        # Remove the NULL marker from list-type values, leaving the normal values in place.
+        # (In the case of singleton null markers, we leave them alone to distinguish them from empty arguments.
+        # In all cases we will use the null flag exclusively, disregarding the value, to handle NULLs.)
+        if ((_wheres_bIsList)); then
+            br2=${BASH_REMATCH[2]}
+            if [[ "${BASH_REMATCH[1]}" == , ]]; then br2=; fi
+            value="${value/${BASH_REMATCH[1]}$NULL_INDICATOR$br2/}"
+        fi
+    fi
+
+    # In the case of abbreviated value ranges or lists, expand them to complete interval specs or lists
+    isArgOfType "$value" "numRange|dateRange|prefixList"
+    valueType=$?
+    if ((valueType > 0)); then
+
+        # Expand the abbreviated values into complete ones
+        expandValueSet $value $valueType
+        value=$g_returnString
+
+        # Ranges need to be flagged for subsequent conversion to BETWEEN...AND subclauses
+        if ((valueType==1 || valueType==2)); then
+            ((_wheres_bIsRange = TRUE))
+        fi
+    fi
+
+    return $isNameGiven
+}
+
+########################################################################################################
+# processNamedNCVArgument
+# A major subroutine of generateWhereClause() that builds a SQL snippet for a name-comparator-value construct
+# having an explicitly given "name" component
+########################################################################################################
+function processNamedNCVArgument()
+{
+    # Turn regex values (singletons or lists) into "LIKE" particles
+    isArgOfType "$value" alnumRegex
+    if (($?)); then
+
+        # The output: "{AND,OR} [NOT] (x LIKE 'y' OR x LIKE 'z' OR ...)"
+        OLDIFS="$IFS"; IFS=","; valueArray=($value)
+        for singleVal in ${valueArray[@]}; do
+            if [[ $singleVal =~ [%_] ]]; then
+                sql+=$name" LIKE '$singleVal' OR "
+            else
+                sql+=$name" = '$singleVal' OR "
+            fi
+        done
+        IFS="$OLDIFS"
+
+        if ((_wheres_bIncludesNull)); then
+            sql+=$name" IS NULL "
+        fi
+
+        sql=${sql% OR }
+
+    # Turn lists of values into "IN(...)" particles
+    elif ((_wheres_bIsList)); then
+        quoteListIfNeeded "$value" $code; value=$g_returnString
+
+        # Format floating-point lists for mysql
+        formatValueIfDecimalList "$value"; value=$g_returnString
+
+        # To post-sort the result set, we record the values (without quotes) and the column name, always using the FIRST value list we encounter.
+        if [[ -z $columnToSortBy ]]; then
+            valuesToSortBy=${value//\'/}
+            columnToSortBy=$name
+        fi
+
+        # Construct the final piece of SQL
+        if ((_wheres_bIncludesNull)); then
+            sql+="$name IN ($value) OR $name IS NULL"
+        else
+            sql+="$name IN ($value)"
+        fi
+
+    # Turn value ranges (either dates or numbers) into "BETWEEN...AND" particles
+    elif ((_wheres_bIsRange)); then
+        quoteRangeValueIfNeeded "$value" $code; value=$g_returnString
+        formatValueIfDecimal "${value%$delim*}"; local lowValue=$g_returnString
+        formatValueIfDecimal "${value#*$delim}"; local highValue=$g_returnString
+
+        sql+="$name BETWEEN $lowValue AND $highValue"
+
+    # Turn single values (ints, floats, alnums) into "name = value" particles (or <>, >=, etc.)
+    else
+
+        # NULL is a special case of a solitary value...
+        if ((_wheres_bIncludesNull)); then
+            sql+="$name IS NULL"
+
+        # The general case for solitary values...
+        else
+            quoteSingleValueIfNeeded "$value" $code; value=$g_returnString
+            formatValueIfDecimal "$value"; value=$g_returnString
+
+            sql+="$name $comparator $value"
+        fi
+    fi
+}
+
+########################################################################################################
+# processUnnamedNCVArgument
+# A major subroutine of generateWhereClause() that builds a SQL snippet for a name-comparator-value construct
+# that lacks an explicit "name" component
+########################################################################################################
+function processUnnamedNCVArgument()
+{
+    local singleCol
+
+    # Turn regex values (singletons or lists) into "LIKE" particles
+    isArgOfType "$value" alnumRegex
+    if (($?)); then
+
+        # Desired output: "{AND,OR} [NOT] (x LIKE 'y' OR x LIKE 'z' OR ...)"
+        OLDIFS="$IFS"; IFS=","; valueArray=("$value")
+        for singleCol in ${defaultAlnumCols[@]}; do
+            local single_col=${singleCol%%:*}
+            for singleVal in ${valueArray[@]}; do
+                if [[ "$single_col" =~ [%_] ]]; then
+                    sql+=$single_col" LIKE '${singleVal}' OR "
+                else
+                    sql+=$single_col" = '${singleVal}' OR "
+                fi
+            done
+            if ((_wheres_bIncludesNull)); then
+                sql+=$single_col" IS NULL OR "
+            fi
+        done
+        IFS="$OLDIFS"
+
+    elif ((_wheres_bIsRange)); then
+        # TODO: Ranges can be numeric or date ranges, but we only do integer- and alpha-type column inference,
+        # so that is all that will work here. Maybe some day we will add default float- and date-type columns.
+        for singleCol in ${defaultNumCols[@]}; do
+            code=${dftNumCodes[numDftNumCols]}
+
+            quoteRangeValueIfNeeded "$value" $code; value=$g_returnString
+
+            local lowValue=${value%$delim*}
+            local highValue=${value#*$delim}
+
+            sql+="$singleCol BETWEEN $lowValue AND $highValue OR "
+        done
+
+    # Strict alpha or numeric values, no regexes
+    else
+
+    # Process numeric values -- singletons and lists
+    isArgOfType "$value" "integer|intList|float|floatList|null"
+    valueType=$?
+
+    if ((valueType>0)); then
+
+        # Format decimal and decimal list values for mysql
+        if ((valueType==3)); then
+            formatValueIfDecimal "$value"; value=$g_returnString
+        elif ((valueType==4)); then
+            formatValueIfDecimalList "$value"; value=$g_returnString
+        fi
+
+        # Construct a query fragment piece-by-piece by iterating over the default columns
+        for singleCol in ${defaultNumCols[@]}; do
+            code=${dftNumCodes[numDftNumCols]}
+
+            # If this column name has length bounds on its values, parse them out
+            getValueLengthBounds "$singleCol"
+            haveLengthBounds=$?
+            [[ $g_returnString =~ $threeValueParser ]]
+            singleCol=${BASH_REMATCH[1]}; minLength=${BASH_REMATCH[2]}; maxLength=${BASH_REMATCH[3]}
+
+            quoteListIfNeeded "$value" $code; fixedValue=$g_returnString
+
+            # Add an "OR" atom to this query fragment -- one way for lists, another way for singletons
+            if ((_wheres_bIsList)); then
+
+                # Check the values against the length bounds for the current column, if any.
+                if ((haveLengthBounds)) && ! checkListItemLengths $value $minLength $maxLength; then
+                    continue
+                fi
+
+                sql+=$singleCol" IN ($fixedValue) OR "
+                if ((_wheres_bIncludesNull)); then
+                    sql+=$singleCol" IS NULL OR "
+                fi
+
+                # To re-sort the result set, we record the values (without quotes) and the column name, always using the FIRST value list we encounter.
+                if [[ -z $columnToSortBy ]]; then
+                    valuesToSortBy=${fixedValue//\'/}
+                    columnToSortBy=${defaultNumCols[@]//:+([^\ ])/} # space-delimited list of column names
+                fi
+
+            else
+                # Check the value against the length bounds for the current column, if any.
+                if ((haveLengthBounds)) && ! checkSingleItemLength $value $minLength $maxLength; then
+                    continue
+                fi
+
+                # Special case of the NULL as singleton:
+                if ((_wheres_bIncludesNull)); then
+                    sql+=$singleCol" IS NULL OR "
+
+                # General case for singletons:
+                else
+                    sql+=$singleCol" $comparator $fixedValue OR "
+                fi
+            fi
+
+            ((numDftNumCols++))
+        done
+
+    # Process alpha-numeric values -- singletons and lists
+    else
+    isArgOfType "$value" "alnum|alnumList"
+    valueType=$?
+
+    if ((valueType>0)); then
+
+        # Construct a query fragment piece-by-piece by iterating over the default columns
+        for singleCol in ${defaultAlnumCols[@]}; do
+            code=${dftAlnumCodes[numDftAlnumCols]}
+
+            # If this column name has length bounds on its values, parse them out
+            getValueLengthBounds "$singleCol"
+            haveLengthBounds=$?
+            [[ $g_returnString =~ $threeValueParser ]]
+            singleCol=${BASH_REMATCH[1]}; minLength=${BASH_REMATCH[2]}; maxLength=${BASH_REMATCH[3]}
+
+            # Add an "OR" atom to the current query piece -- one way for lists, another way for singletons
+            if ((_wheres_bIsList)); then
+
+                # Check the values against the length bounds for the current column, if any.
+                if ((haveLengthBounds)) && ! checkListItemLengths $value $minLength $maxLength; then
+                    continue
+                fi
+
+                # To re-sort the result set, we record the values (without quotes) and the column name, always using the FIRST value list we encounter.
+                if [[ -z $columnToSortBy ]]; then
+                    valuesToSortBy=$value
+                    columnToSortBy=${defaultAlnumCols[@]//:+([^\ ])/} # space-delimited list of column names
+                fi
+
+                quoteListIfNeeded "$value" $code; fixedValue=$g_returnString
+
+                sql+=$singleCol" IN ($fixedValue) OR "
+                if ((_wheres_bIncludesNull)); then
+                    sql+=$singleCol" IS NULL OR "
+                fi
+
+            else   # This value is NOT a list.
+
+                # Check the value against the length bounds for the current column, if any.
+                if ((haveLengthBounds)) && ! checkSingleItemLength $value $minLength $maxLength; then
+                    continue
+                fi
+
+                # Special case of the NULL as singleton:
+                if ((_wheres_bIncludesNull)); then
+                    sql+=$singleCol" IS NULL OR "
+
+                # General case for singletons:
+                else
+                    quoteSingleValueIfNeeded "$value" $code; fixedValue=$g_returnString
+
+                    sql+=$singleCol" $comparator $fixedValue OR "
+                fi
+            fi
+
+            ((numDftAlnumCols++))
+        done
+
+    # Unrecognized value types
+    else
+        return 2
+    fi
+    fi
+    fi
+
+    sql=${sql% OR }
+}
+
+########################################################################################################
+# HELPER FUNCTIONS for generateWhereClause and its major subroutines
+########################################################################################################
+
+function quoteSingleValueIfNeeded()
+{
+    local val=$1 code=$2
+    if [[ $code =~ ^q ]]; then
+        val="'$val'"
+    fi
+    g_returnString=$val
+}
+
+function quoteListIfNeeded()
+{
+    local val=$1 code=$2
+    if [[ $code =~ ^q ]]; then
+        val="'"${val//,/\',\'}"'"
+    fi
+    g_returnString=$val
+}
+
+function quoteRangeValueIfNeeded()
+{
+    local val=$1 code=$2
+    if [[ $code =~ ^q ]]; then
+        val="'${val/$delim/'$delim'}'"
+    fi
+    g_returnString=$val
+}
+
+# Returns 1 if argument is negative, 0 otherwise
+function isNegativeComparator()
+{
+    [[ $1 == '<>' || $1 == '!=' ]]
+    return $((! ($?) ))
+}
+
+
+# Returns 0 if all the list items' lengths are within the bounds, 1 if there is a violation (bash convention)
+# Arguments: (1) listBeingChecked  (2) lowerBound  (3) upperBound
+function checkListItemLengths()
+{
+    [[ ($1 =~ (^|,)[^,]{$MIN_VALUE_LEN,$2}(,|$) ) || ($1 =~ [^,]{$(($3+1))} ) ]]
+    return $((! $?))
+}
+
+# Similar to the above
+function checkSingleItemLength()
+{
+    [[ (${#1} -lt $2) || (${#1} -gt $3) ]]
+    return $((! $?))
+}
+
+function getValueLengthBounds()
+{
+    columnName=$1
+
+    # Get the length bounds if they are present
+    if [[ $columnName =~ : ]]; then
+        haveLengthBounds=1
+        [[ $columnName =~ (.*):(.*)-(.*) ]]
+        columnName=${BASH_REMATCH[1]}
+        minLength=${BASH_REMATCH[2]:-$MIN_VALUE_LEN}
+        maxLength=${BASH_REMATCH[3]:-$MAX_VALUE_LEN}
+    else
+        haveLengthBounds=0
+    fi
+
+    g_returnString=$columnName
+    g_returnString+=$delim
+    g_returnString+=$minLength
+    g_returnString+=$delim
+    g_returnString+=$maxLength
+
+    return $haveLengthBounds
+}
+
+function formatValueIfDecimal()
+{
+    local val=$1
+    isArgOfType "$val" float
+    if (($?)); then
+        val=${val/#./0.}
+    fi
+
+    g_returnString=$val
+}
+
+function formatValueIfDecimalList()
+{
+    local val=$1
+    isArgOfType "$val" floatList
+    if (($?)); then
+        val=${val/#./0.}
+        val=${val//,./,0.}
+    fi
+
+    g_returnString=$val
+}
+
+############################################################################
+# loadFileAsCommaList
+# Helper function to read a list of values from a file (or stdin) into a comma-separated list.
+# Features some input tolerance smarts: Blank lines are skipped, as are quotes and unprotected spaces.
+############################################################################
+function loadFileAsCommaList()
+{
+    fileName=$1
+    if [[ ! -e "$fileName" ]]; then
+        echo Error: $fileName: File not found.
+        exit 7
+    fi
+
+    # Load the values
+    mapfile -t < "$fileName"
+    OLDFS=$IFS; IFS=,
+
+    # Prep/clean the values. At each step, check the value list against a regex first so we can skip the unnecessary steps.
+
+    # (1) single-line and commify the values
+    values="${MAPFILE[*]}"
+    # (2a) strip unprotected end-spaces
+    if [[ "$values" =~ \ , ]]; then values=${values//+( ),/,}; fi
+    if [[ "$values" =~ \ $ ]]; then values=${values%%+( )}; fi
+    # (2b) strip unprotected begin-spaces
+    if [[ "$values" =~ ,\  ]]; then values=${values//,+( )/,}; fi
+    if [[ "$values" =~ ^\  ]]; then values=${values##+( )}; fi
+    # (3) remove blank entries, which show up as consecutive or extremal commas
+    if [[ "$values" =~ ,, ]]; then values=${values//,+(,)/,}; fi
+    if [[ "$values" =~ ^, ]]; then values=${values##+(,)}; fi
+    if [[ "$values" =~ ,$ ]]; then values=${values%%+(,)}; fi
+    # (4) remove quote-protection
+    if [[ "$values" =~ [\"\'] ]]; then
+        if [[ "$values" =~ [\"\'], ]]; then values=${values//[\"\'],/,}; fi
+        if [[ "$values" =~ ,[\"\'] ]]; then values=${values//,[\"\']/,}; fi
+        if [[ "$values" =~ [\"\']$ ]]; then values=${values%%[\"\']}; fi
+        if [[ "$values" =~ ^[\"\'] ]]; then values=${values##[\"\']}; fi
+    fi
+    # Done.
+    IFS=$OLDFS
+
+    g_returnString=$values
+}
+
+############################################################################
+# foldResultSet
+# Word-wrap a result set to print nicely on the screen and display
+# the first (presumably "key") column with each wrapped section
+#
+# Syntax: foldResultSet  rawResultSet  [selectClause  sortInstructions]
+#         where sortInstructions has the form columnsToSortBy:valuesToSortBy
+#     and if either side is blank, both bracketed args above are ignored
+#
+# Assumptions: The string passed in is a MYSQL result set in table format
+#     (see mysql's "-t" option) complete with ascii-art boxes. The
+#     topmost row is the column header and the rest contain the results.
+#
+# NOTE: For a truly perfect implementation, the running of the query and
+# subsequent management of the result set should be done in perl, which can
+# handle arbitrary characters in the data. Here we rely on some simplified
+# parsing which does not work on the arbitrary "blob", for instance. Maybe someday
+# this will be rewritten in perl.
+############################################################################
+function foldResultSet()
+{
+    if [[ -z "$1" ]]; then
+        return 0
+    fi
+
+    # Deal with the DOS/Unix line-endings discrepancy as reflected in mysql result sets
+    local newLine=$'\n'
+    if [[ $1 =~ $'\r'$'\n' ]]; then newLine=$'\r'$'\n'; fi
+
+    # Remove the ascii-art lines from the result set, leaving header and body. (Faster than grep -v.)
+    isOptionOn noHeader $OPTIONS
+    if (($?)); then
+        [[ $1 =~ (^[+-]+)${newLine}(.*)${newLine}\+ ]]
+        resultWidth=${#BASH_REMATCH[1]}
+        resultSet=${BASH_REMATCH[2]}
+    else
+        local plus="\+"
+        # New regex that accepts isolated plusses in the header.
+        [[ $1 =~ ^(${plus}[-+]+${plus})${newLine}($'|'.*$'|'${newLine})${plus}[+-]+${newLine}(.*)${newLine}\+ ]]
+        resultWidth=${#BASH_REMATCH[1]}
+        resultSet=${BASH_REMATCH[2]}${BASH_REMATCH[3]}   # [2] = column hdr   [3] = data rows
+    fi
+
+    # Corner case: embedded newlines in result data
+    if [[ "$resultSet" =~ [^|+]${newLine} ]]; then
+        echo "******************************************************" > /dev/stderr
+        echo  Embedded newlines detected in result set, cannot fold. > /dev/stderr
+        echo "******************************************************" > /dev/stderr
+        FOLDED_RESULT="$resultSet"
+        echo "${FOLDED_RESULT//|/}"
+        return 0
+    fi
+
+    # Before folding, pre-sort the result set if a sort is needed
+    # TODO: Work in progress...
+    if [[ "$3" =~ ^[a-z] ]]; then
+        :
+    fi
+
+#    local foldedWidth=$((COLUMNS-KEY_WIDTH))
+#    if ((foldedWidth < 1)); then
+    if ((resultWidth < COLUMNS)); then
+        # No folding needed, the result is narrow enough for the screen
+        # TODO: If we've monkeyed with the column ordering of the result set for the reasons below, we need to clean up the monkeying before setting FOLDED_RESULT here.
+        FOLDED_RESULT="$resultSet"
+        echo "${FOLDED_RESULT//|/}"
+        return 0
+    else
+
+        # Determine the width of the "key" column.
+        # TODO: This function currently assumes the key column is the first column. Change this function and its caller(s)
+        # TODO: so that this becomes a universally valid assumption, i.e. reorder the select clause before running the query!
+        [[ "$resultSet" =~ ^(\|[^|]*)\ \| ]]
+        local KEY_HDR=${BASH_REMATCH[1]}
+        KEY_START=1   # TODO: figure this out for the general case.
+        local KEY_WIDTH=${#KEY_HDR}
+        ((KEY_WIDTH++))
+
+        # Chop off the key column. FIXME: Currently assumes it's the first even though that isn't always the case.
+        characterCounter=""
+        for i in {1..10}; do
+            characterCounter+="????????????????????"
+        done
+        FOLDED_RESULT=$'\n'$resultSet
+        FOLDED_RESULT=${FOLDED_RESULT//$'\n'${characterCounter:1:$KEY_WIDTH}/$'\n'}
+
+        # Fold the rest of the result string: (1) hide the spaces and change pipes to spaces so we can fold easily, (2) fold, and (3) reset the spaces and pipes.
+        # It was determined experimentally that this method involving two "tr" calls is much faster
+        # for medium-to-large result sets than using two pairs of bash-builtin search-and-replacement operations.
+
+        FOLDED_RESULT=$(echo "$FOLDED_RESULT" | tr ' |' '| ' | fold -sw $((COLUMNS-KEY_WIDTH)) | tr '| ' ' |')
+
+        # Useful recipe for a generic right-hand-side cut. You need to supply the field width; note the "${}":
+        #printf -v FOLDED_RESULT "%${}s\n" ${FOLDED_RESULT//$'\n'${characterCounter:1:$KEY_WIDTH}/$'\n'}
+
+        # TODO: Eventually we should address the problem of the key column not always being the first column.
+        # TODO: In that case, assuming we want to fold in the first place (we can make that optional with a user option "dontFold | raw | <etc.>")
+        # TODO: its probably best to pre-adjust the SELECT_CLAUSE before calling "mysql" to give a resultSet that's as easy as possible to manipulate, and
+        # TODO; then tweak it to the intended result. That's because to do all the manipulation right here is pretty tricky if the key column is sitting in the middle
+        # TODO: and we want to leave it in place on the first folded chunk of results (if it fits there) while displaying it **first** on the subsequent folded chunks.
+        # TODO: So let's propose a scheme where we've pre-adjusted it by putting the key column first and some placeholder in the key column's user-intended position.
+        # TODO: Meanwhile, we'll retain our use of two row-major arrays, one for the key column and one for the rest of the result set, so the for-loop
+        # TODO: that prints everything can print as follows, line-by-line:    ${left side of main block} ${key block} ${right side of main block}.
+        # TODO: All we have to do is compensate for the placeholder in the main block by deleting the spaces and one of the field separators around it.
+
+    fi
+
+    # Array-ify
+    declare -a FOLDED_ARR
+    declare -a KEY_ARR
+    OLDFS="$IFS"; IFS=$'\n'
+    FOLDED_ARR=($FOLDED_RESULT)
+    KEY_ARR=($(cut -c2-$KEY_WIDTH <<< "$resultSet"))  # TODO: instead of cut, use a ${foo//???????/} construction (i.e. delete chars)
+    local numFoldedLines="${#FOLDED_ARR[@]}"
+    IFS="$OLDFS"
+
+    # Print the contents in the right order (not the given order)
+    local phaseShift currentLine
+    local numRawLines=$(echo "${resultSet:$KEY_WIDTH}" | wc -l) # TODO: instead of wc -l, use countChars($'\n')
+    local numSections=$((numFoldedLines / numRawLines))
+
+    # Proceed section by section
+    for ((phaseShift=0; phaseShift<$numSections; phaseShift++)); do
+
+        # Print key header and column header
+        echo "${KEY_ARR[0]}""${FOLDED_ARR[$phaseShift]//|/}"
+
+        # Print all following key rows and result rows plus a blank line
+        currentLine=$phaseShift
+        for ((lineIdx=1; lineIdx<$numRawLines; lineIdx++)); do
+            ((currentLine+=numSections))
+            echo "${KEY_ARR[lineIdx]}""${FOLDED_ARR[$currentLine]//|/}"
+        done
+        echo
+    done
+
+    # Return the "key column" as a single row vector
+    # echo ${KEY_ARR[@]}
+}
+
+
+############################################################################
+# Minor routines
+############################################################################
+validate_single_column()
+{
+    if [ $# -lt 1 ]; then
+        echo USAGE:  ${FUNCNAME[0]}  columnNameRegex
+        exit 12
+    fi
+}
+
+validate_id_or_name_regex()
+{
+    if [ $# -lt 1 ]; then
+        echo USAGE:  ${FUNCNAME[0]}  id_or_nameRegex
+        exit 34
+    fi
+}
+
+# syntax: validate_args  minArgs  maxArgs  argSyntax
+# TODO: Make maxargs optional
+# $1 and $2 here are meant to designate the positional parms to this fcn, not to the caller
+validate_args()
+{
+    # When maxargs is optional, will have to do this differently. Maybe replace  '-gt $2'  with  '-gt $1' ??
+    if [[ $# -lt $1 || $# -gt $2 ]]; then
+        shift
+        # Shift again if arg[2] is optional and is not given
+        echo USAGE: ${FUNCNAME[0]} "$@"
+        exit 56
+    fi
+}
+
+
+

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+: ${TQL_HOME:=$HOME/tql}
+source $TQL_HOME/db_functions
+
+THIS_SCRIPT=`basename $0`
+validate_single_column "$@"
+
+STANDARD_COLS="routine_name,last_altered"     # others: created, routine_def'n (too long), comment, definer...
+TABLES="information_schema.routines"
+WHERE_PRECLAUSE="routine_type='procedure' and routine_schema='$DBNAME'"
+
+g_defaultAlnums=routine_name
+
+# Invoke the main parsing routine
+parseCompletely  "$STANDARD_COLS"  "$TABLES"  "routine_name"  "$WHERE_PRECLAUSE"  "$@"
+retVal=$?
+parsedClauses=$g_returnString
+if ((retVal >= 10)); then
+    echo Exiting.
+    exit $retVal
+elif ((retVal == 1)); then
+    g_ACTION=UPDATE
+fi
+
+# Parse out the SQL clauses from the return string
+if [[ $parsedClauses =~ $fiveValueParser ]]; then
+    OPTIONS="${BASH_REMATCH[1]}"
+    ACTION_CLAUSE="${BASH_REMATCH[2]}"
+    WHERE_CLAUSE="${BASH_REMATCH[3]}"
+    LIMIT="${BASH_REMATCH[4]}"
+    sortInstructions="${BASH_REMATCH[5]}"
+fi
+
+if [[ $g_ACTION == UPDATE ]]; then
+    DB_COMMAND="$g_ACTION $TABLES $ACTION_CLAUSE $WHERE_CLAUSE $LIMIT"
+else
+    DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES $WHERE_CLAUSE $LIMIT"
+fi
+
+isOptionOn "q|query" $OPTIONS
+if (($?)); then
+    echo "$DB_COMMAND"
+    exit 0
+fi
+
+RAW_RESULT=$(mysql $g_mysqlOptions -t -e "$DB_COMMAND") || exit $?
+if [[ $g_ACTION == UPDATE ]]; then exit 0; fi
+
+if [[ -z $RAW_RESULT ]]; then
+    echo No Sprocs found. > /dev/stderr
+    exit 1
+fi
+
+foldResultSet "$RAW_RESULT" "$sortInstructions"
+

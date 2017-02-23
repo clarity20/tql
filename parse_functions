@@ -1,0 +1,849 @@
+# vim:filetype=sh:fdm=marker:
+
+declare -r TRUE=1
+declare -r FALSE=0
+
+# Define certain types of tokens
+declare -r g_ANDop='[&][&]'
+declare -r g_ORop='[|][|]'
+declare -r g_leftParen='[[\({]'
+declare -r g_rightParen='[]\)}]'
+
+# Define a character (sequence) to delimit tokens in the internal token stream; this sequence may not appear in any token.
+: ${tokenDelimiter:=$'\a'}
+
+# Define a flag for single-character escapes
+declare -r g_escapeChar='\\'
+
+# We introduce some bookkeeping variables that allow us to accept un-protected spaces in constant values, e.g. hello world
+# in place of hello" "world or "hello world". At first we assume spaces are token delimiters and write them to the token stream
+# as such. But if we discover later on that they are actually contained within constant values, we will modify the
+# generated token stream to reflect the correct interpretation.
+g_compoundTokenType=
+g_compoundTokenBuffer=
+
+#TODO: Define all markup flags up here. Try to make them all single-character. Instead of using "V"
+#TODO: to denote all constant values, be more specific about the value type.
+
+####################################################################################
+# The parsing/lexing routine for WHERE-clause arguments
+####################################################################################
+function parseWhereArgument()
+{
+    if [[ $# -ne 1 ]]; then
+        echo Usage: $FUNCNAME clauseToBeParsed
+        return 1
+    fi
+
+    local rhs=$1
+    declare -i nestingLevel=0 funcNestingLevel=0
+    declare -i NCVCount=0 insideNCV=0
+    local output=""
+    local letter="" previousLetter
+    local tokenStream=""
+
+    convertEscapeSequences
+
+    ################################################################################
+    # Main processing loop: Pull tokens off the front of the input string one-by-one
+    # and create a stream of token descriptors, tokens and some syntax annotations.
+    # There are a few cases where we retroactively edit the stream as we discover new information from the input.
+    ################################################################################
+    
+    while [[ -n $rhs ]]; do
+        previousLetter=$letter
+        letter=${rhs:0:1}
+
+        # Identify left and right parentheses. Track their nesting levels and their types (grouping or functional).
+        if [[ $letter =~ $g_leftParen ]]; then
+            ((nestingLevel++))
+
+            # If the preceding token is marked as a word, it's really a function name and the parenthesis is a function parenthesis.
+            # We will modify the token (inside the pending buffer, where it currently resides) and stream it with the function paren.
+            if [[ $g_compoundTokenType == W ]]; then
+                ((funcNestingLevel++))
+
+                # Mark the pending token as a function name
+                g_compoundTokenType=F
+                g_compoundTokenBuffer=${g_compoundTokenBuffer/#W/F}
+
+                # Markup the '(' as a function parenthesis
+                streamToken '['$nestingLevel; output+=$g_returnString
+
+            else
+                # If the preceding token is not a word, mark the '(' as a grouping parenthesis
+                streamToken '('$nestingLevel; output+=$g_returnString
+            fi
+
+            [[ $rhs =~ ^"$letter"(.*) ]]
+            rhs=${BASH_REMATCH[1]}
+            continue
+
+        elif [[ $letter =~ $g_rightParen ]]; then
+            # Assign this ')' the same paren type as its matching '(', which is the nearest one to the left with the same nesting level.
+            local parenIndicator="[("
+            [[ $output =~ .*$tokenDelimiter([$parenIndicator])$nestingLevel(.*) ]]
+            if [[ ${BASH_REMATCH[1]} == '[' ]]; then
+                local tokenToLookFor tokenOccurrences=0 functionArity
+                local tokenMarker="@"
+                local functionCall=${BASH_REMATCH[2]}
+
+                # Determine the arity of the function call by counting the comma tokens at the current (paren) nesting level:
+                # (1) Construct the comma token we will search for
+                streamToken ","$nestingLevel; tokenToLookFor=$g_returnString
+                # (2) Count off the commas left-to-right
+                while [[ $functionCall =~ ("$tokenToLookFor")(.*) ]]; do
+                    ((tokenOccurrences++))
+                    functionCall=${BASH_REMATCH[2]}
+                done
+                if ((tokenOccurrences > 0)); then
+                    ((functionArity=tokenOccurrences + 1))
+                else
+                    [[ -z $functionCall ]]
+                    functionArity=$?         # 0 if blank, 1 otherwise
+                fi
+
+                # Close the function arg list
+                streamToken ']'$nestingLevel'A'$functionArity; output+=$g_returnString
+                ((funcNestingLevel--))
+            else
+                streamToken ')'$nestingLevel; output+=$g_returnString
+            fi
+
+            ((nestingLevel--))
+            [[ $rhs =~ ^"$letter"(.*) ]]
+            rhs=${BASH_REMATCH[1]}
+            continue
+        fi
+
+        # Identify bit-shift operators and comparators. We group them together under the same regex match since they are similar.
+        if [[ $rhs =~ ^([=\<\>\!]{1,2})(.*) ]]; then
+            comp=${BASH_REMATCH[1]}
+            rhs=${BASH_REMATCH[2]}
+
+            # If it's a bit-shift operator, tag and append it and move on.
+            if [[ $comp == '<<' || $comp == '>>' ]]; then
+                streamToken O$comp; output+=$g_returnString
+                continue
+            fi
+
+            # Otherwise the token is a comparator. Tag it, but before moving on we need to check
+            # for a corner case that would require a special back-fix to the token stream.
+            tagIfBeginNCV; insideNCV=$?
+            streamToken C$comp; output+=$g_returnString
+            
+            # Now for the corner case. The comparator tells us that certain "%" characters we had assumed were SQL wildcards
+            # were actually modulus operators (based on the distinction between r-values and l-values). We will fix
+            # the token stream by splitting the surrounding token into two word/value tokens and an intervening "%" operator.
+            if ((ambiguousPercentSign)); then     # TODO: A perfect solution would wrap this in a while loop and decrement it by one each time.
+                [[ $output =~ (.*)${tokenDelimiter}v([^${tokenDelimiter}]*)(${tokenDelimiter}|$) ]]    # Format:   (pre-contents) marker (contents) (end-marker or end)
+                local oldToken=${BASH_REMATCH[2]}    # token with surrounding markup stripped away
+                local newTokenSet=""
+                local leftSide=${oldToken%%%*}
+                local rightSide=${oldToken#$leftSide}
+
+                # Tag and append the first word or value
+                if [[ $oldToken =~ ^([\*[:lower:]][[:alnum:]]*)$ ]]; then        # Is the token (expandable) word-like?
+                    tokenType=W
+                else
+                    tokenType=V
+                fi
+                streamToken $tokenType$leftSide; newTokenSet+=$g_returnString
+
+                # Tag and append the % operator
+                streamToken O%; newTokenSet+=$g_returnString
+
+                # Tag and append the second word or value
+                if [[ $newToken =~ ^([\*[:lower:]][[:alnum:]]*)$ ]]; then        # Is the token (expandable) word-like?
+                    tokenType=W
+                else
+                    tokenType=V
+                fi
+                streamToken $tokenType$rightSide; newTokenSet+=$g_returnString
+
+                # In the output stream, insert the new token set in place of the old (single) token, overwriting the old markup too
+                output=${output/#v${oldToken}/$newTokenSet}
+                ambiguousPercentSign=$FALSE
+            fi
+
+            continue
+        fi
+
+        # Mark boolean logic operators.
+        if [[ "$rhs" =~ ^($g_ANDop)(.*) ]]; then
+            rhs=${BASH_REMATCH[2]}
+            streamToken B'&'; output+=$g_returnString   # B& = boolean AND      # TODO: Caller expects "AND" not "B&"
+            continue
+        elif [[ "$rhs" =~ ^($g_ORop)(.*) ]]; then
+            rhs=${BASH_REMATCH[2]}
+            streamToken B'|'; output+=$g_returnString   # B| = boolean OR       # TODO: Caller expects "OR" not "B|" 
+            continue
+        fi
+
+        # TODO: Mark isolated (non-list) NULLs. Distinguish them from minus-sign operators...
+
+        # Inside function calls 
+        if [[ $funcNestingLevel -gt 0 ]]; then
+
+            # Mark commas as argument separators, because comma-lists should not appear as function parameters
+            if [[ $letter == , ]]; then
+                streamToken $letter$nestingLevel; output+=$g_returnString
+                [[ $rhs =~ ^"$letter"(.*) ]]
+                rhs=${BASH_REMATCH[1]}
+                continue
+
+            # All other chars are fcn args. Treat like "generic" chars for now.
+#TODO: Look for words that can be expanded. We will not look for lists or regex expressions; we don't think they can be inside function calls.
+            else
+                output+=$letter
+                [[ $rhs =~ ^"$letter"(.*) ]]
+                rhs=${BASH_REMATCH[1]}
+                continue
+            fi
+        fi
+
+        #######################################################################################################################
+        #
+        # Now we look at "string-like" and numeric tokens. In contrast to the above, the process of identifying these tokens correctly
+        # depends pretty tightly on their internal structure. We cannot simply look at their first few characters.
+        #
+        #######################################################################################################################
+        #
+        # First we process tokens that are, or might be, expandable words (aka abbreviations).
+        # These tokens begin with [[:lower:]] or perhaps "*" and are simple alphanumerics, i.e. they are not lists or regexes.
+        #
+        #######################################################################################################################
+
+        # Identify and extract words that might be expandable. We cast a wide net, snagging all simple values that don't begin with a capital
+        # because at this stage we can't know which are truly expandable words.
+        if [[ $rhs =~ ^([\*[:lower:]][[:alnum:]]*)(.*) ]]; then        # Token must start in a wordlike way, with star or lowercase
+            rawToken=${BASH_REMATCH[1]}
+            local tmpRhs=${BASH_REMATCH[2]}
+            local nextChar=${tmpRhs:0:1}
+
+            # Make sure the following character (if there is one) is a word terminator, to filter out non-word tokens that begin like words.
+            # Here we assume that a trailing % means regex, not modulus. There is other code in this function to detect that situation and fix it.
+            if [[ ! $nextChar =~ ^[,_%\"\'] ]]; then
+                rhs=$tmpRhs
+                tagIfBeginNCV; insideNCV=$?
+
+                # If the word begins with a "*", it is a true word only when the "*" is preceded by another operator
+                # or by certain other special characters. Otherwise it is the "times" operator. If it turns out to be
+                # the latter, we dump the "*" to the output so we can treat the following characters as the word.
+                if [[ ($letter == '*') && -n "$previousLetter" && (! "+-*/ (&|" =~ "$previousLetter") ]]; then
+                    output+=$letter
+                    [[ $rawToken =~ ^"$letter"(.*) ]]
+                    rawToken=${BASH_REMATCH[1]}
+                fi
+    
+                # Mark this as a (possible sequence of) expandables. This enables us to process word sequences
+                # such as "DISTINCT foobar" and "INTERVAL n DAY".
+                bufferToken "$rawToken" "W"
+
+                # Proceed to the next token
+                continue
+            fi
+        fi
+
+        #####################################
+        #
+        # Next we handle any string-like tokens that are guaranteed not to be expandable words; these are string constants.
+        #
+        # We break this task down according to the major possibilities:
+        # (1) The token starts with a NULL indicator "-,". We make note of the indicator and then look at whatever follows it, as in items (2)-(4).
+        #     (Breaking this up into multiple steps is easier than adjusting the regexes used to identify string-tokens.)
+        # (2) The token starts with a quoted literal: "..." or '...'
+        # (3) The "most normal" case: an alnum-type token; this would be either a simple or complex token starting with [[:upper:]_%] or a complex
+        # token starting with [[:lower:]].
+        # (4) The token starts with a digit sequence but is not a numeric token.
+        #
+        #####################################
+
+        # (1) If there's a list-initial NULL indicator, flag it and and strip it from the input stream
+        if [[ $rhs =~ ^-, ]]; then
+            rawToken="-,"
+            rhs=${rhs:2}
+            letter=${rhs:0:1}
+        else
+            rawToken=""
+        fi
+
+        # (2) Stream quoted literals.
+        if [[ $letter =~ [\"\'] ]]; then
+            tagIfBeginNCV; insideNCV=$?
+            retrieveFullToken
+            bufferToken "$rawToken" "V"
+            continue
+        fi
+
+        # (3) Stream "normal" alpha-like string tokens.
+        if [[ $rhs =~ ^([[:alpha:]_%][[:alnum:]_%,]*)(.*) ]] ;then      # Grab the first part of the token w.r.t. quotes and NULL markers
+            tagIfBeginNCV; insideNCV=$?
+
+            rawToken+=${BASH_REMATCH[1]}     # Use plus-equals to keep the "-," (NULL) prefix if it's there 
+            rhs=${BASH_REMATCH[2]}
+
+#TODO: Test single-char tokens, esp. "%" which can be the modulus operator or a single-character SQL regex. We'll assume the latter case holds
+#TODO: if and only if either the NCV or its RHS consists solely of "%".
+
+            # Probe forward across all quoted pieces and embedded NULLs to make sure we have the complete token 
+            if [[ ($rhs =~ ^[\"\']) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
+                letter=${rhs:0:1}
+
+                # One or more additional sub-pieces. Grab the whole token.
+                retrieveFullToken
+            fi
+
+            # If the proposed token consists of one "%" surrounded by the right kind of text, it could be parsed as either a regex OR a modulus: 
+            # e.g. 'foo%5' versus foo%5. We can tell the difference once we know whether the "token" is on the right or left hand side
+            # of the current NCV. For now, we will treat it as a regex and set an indicator, so that we can re-visit and fix if necessary.
+            if [[ $rawToken =~ % ]]; then
+                # Verify that the first part is word-like, and the last part is either digital or word.
+                local firstPart=${rawToken%%%*}
+                local secondPart=${rawToken#$firstPart%}
+                if [[ $firstPart =~ ^[a-z][[:alnum:]_]*$ && ( $secondPart =~ ^[a-z][[:alnum:]_]*$ || $secondPart =~ ^[0-9]+$ ) ]]; then
+                #if [[ $firstPart =~ ^[0-9]+$ && ( $secondPart =~ ^[0-9]+$ || $secondPart =~ ^[a-z][[:alnum:]_]*$ ) ]]; then
+                    # TODO: There remains an unhandled corner case where the second part is a word beginning with "*". What a pain!
+                    # One quick hack of a fix would be to replace every "%*" with "% *" at the very top of this lexer...
+                    ambiguousPercentSign=$TRUE
+                    bufferToken "$rawToken" "v"    # use a small-v marker here to indicate the exceptional case
+                    continue
+                fi
+            fi
+
+            bufferToken "$rawToken" "V"
+            continue
+        fi
+
+        # (4) Stream digit-initial alnums that are not numbers per se.
+        if [[ $rhs =~ ^([0-9][[:alnum:]%_,]+)(.*) ]]; then    # Get the first part consisting of alnums, commas, and regexes only.
+            local tmpToken=${BASH_REMATCH[1]}
+            local tmpRhs=${BASH_REMATCH[2]}
+
+            # Only proceed if the first part has something non-digital.
+            if [[ $tmpToken =~ [^[:digit:]] ]]; then
+                # Strip off the leading part
+                rawToken+=$tmpToken
+                rhs=$tmpRhs
+                tagIfBeginNCV; insideNCV=$?
+
+                # Probe forward across all quoted or NULL parts to get the complete token
+                if [[ ($rhs =~ ^[\"\']) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
+                    letter=${rhs:0:1}
+
+                    retrieveFullToken
+                fi
+
+                # If the proposed token consists of one "%" surrounded by the right kind of text, it could be parsed as either a regex OR a modulus: 
+                # e.g. 'foo%5' versus foo%5. We can tell the difference once we know whether the "token" is on the right or left hand side
+                # of the current NCV. For now, we will treat it as a regex and set an indicator, so that we can re-visit and fix if necessary.
+                if [[ $rawToken =~ % ]]; then
+                    # Since the first part begins with a digit, we need it to be all-digital and the last part to be either digital or word.
+                    local firstPart=${rawToken%%%*}
+                    local secondPart=${rawToken#$firstPart%}
+                    if [[ $firstPart =~ ^[0-9]+$ && ( $secondPart =~ ^[0-9]+$ || $secondPart =~ ^[a-z][[:alnum:]_]*$ ) ]]; then
+                        # TODO: There remains an unhandled corner case where first/second part is a word beginning with "*". What a pain!
+                        # One quick hack of a fix would be to replace "%*" with "% *" at the very top of this lexer...
+                        ambiguousPercentSign=$TRUE
+                        bufferToken "$rawToken" "v"  # use a small-v marker here to indicate the exceptional case
+                        continue
+                    fi
+                fi
+
+                # This token has been processed.
+                bufferToken "$rawToken" "V"
+                continue
+            fi
+        fi
+
+        # Numeric- and date-like values
+        if [[ $rhs =~ ^([-]?([0-9]*\.)?[0-9]+)(.*) ]]; then      # will capture the leading int or float of numeric/date-like values
+            local oldRhs=$rhs
+            local value=${BASH_REMATCH[1]}
+            rhs=${BASH_REMATCH[3]}
+
+            tagIfBeginNCV; insideNCV=$?
+
+            # First character beyond the initial number tells us a lot about the full extent of the value
+            local nextChar=${rhs:0:1}
+            local following ending
+
+            case $nextChar in
+              ,) # int or float list
+                [[ $rhs =~ ^$nextChar([-0-9,.]+)(.*) ]]    # NOTE: We could specify more precisely where negative signs may legally be placed
+                value+=$nextChar${BASH_REMATCH[1]}
+                rhs=${BASH_REMATCH[2]}
+                streamToken V$value; output+=$g_returnString
+                ;;
+              /) # date, date range, or division operator (TODO: timestamps)
+                local followingPart startingDate
+                # First we deal with tokens that begin yyyy/mm/dd
+                if [[ $oldRhs =~ ([0-9]{4}/[0-9]{1,2}/[0-9]{1,2})(.*) ]]; then
+                    # Starts with a full date (yyyy/mm/dd). Discriminate between dates, date ranges and date subtractions
+                    startingDate=${BASH_REMATCH[1]}
+                    followingPart=${BASH_REMATCH[2]}
+
+                    # Minus sign after date means it's either a date range or a numeric-from-date subtraction.
+                    if [[ $followingPart =~ ^- ]]; then
+                        # We will always choose the date-range interpretation when both are valid. Alternatively,
+                        # the user can force the latter by inserting space delimiters in the input.
+
+                        # Grab the numeric-or-date part after the minus sign
+                        [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
+                        followingPart=${BASH_REMATCH[1]} 
+                        rhs=${BASH_REMATCH[2]}
+
+                        # A slash therein indicates a date range; stream it as such
+                        if [[ $followingPart =~ / ]]; then
+                            value=$startingDate$followingPart
+                            streamToken V$value; output+=$g_returnString
+
+                        # No slash; only digits means we must decide: date range or date subtraction?
+                        elif [[ $followingPart =~ [0-9] ]]; then
+                            # We analyze the numbers surrounding the minus sign
+                            local number1=${startingDate##*/}
+                            local number2=${followingPart#-}
+                            if ((number2<=31 && number2>number1)); then
+                                # Treat it as a date range
+                                value=$startingDate$followingPart
+                                streamToken V$value; output+=$g_returnString
+                            else
+                                # Treat it as a date subtraction. Create three tokens.
+                                value=$startingDate
+                                streamToken V$value; output+=$g_returnString
+                                streamToken O-; output+=$g_returnString
+                                streamToken V$number2; output+=$g_returnString
+                            fi
+                        # other stuff after minus sign --> error
+                        else
+                            echo Invalid date expression. > /dev/stderr
+                            return 2
+                        fi
+                    else
+                        # No trailing minus sign. It's a plain old date.
+                        value=$startingDate$followingPart
+                        rhs=$followingPart
+                        streamToken V$value; output+=$g_returnString
+                    fi
+                # Now we deal with tokens that begin yyyy/mm. We interpret these as either date ranges or arithmetic. (Is that the best way?)
+                elif [[ $oldRhs =~ ([0-9]{4}/[0-9]{1,2})(.*) ]]; then
+                    startingDate=${BASH_REMATCH[1]}
+                    followingPart=${BASH_REMATCH[2]}
+                    if [[ $followingPart =~ ^- ]]; then
+                        # Grab the date part after the minus sign
+                        [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
+                        followingPart=${BASH_REMATCH[1]} 
+                        rhs=${BASH_REMATCH[2]}
+                        value=$startingDate$followingPart
+                        streamToken V$value; output+=$g_returnString
+                    else
+                        # Treat it as arithmetic.
+                        rhs=$followingPart
+                        streamToken V${startingDate:0:4}; output+=$g_returnString
+                        streamToken O'/'; output+=$g_returnString
+                        streamToken V${startingDate:5}; output+=$g_returnString
+                    fi
+                # Finally we deal with other tokens, where the successive runs of digits do NOT suggest a date. We treat it as arithmetic.
+                else
+                    # (Merge with the code immediately above!)
+                    rhs=$followingPart
+                    streamToken V${startingDate:0:4}; output+=$g_returnString
+                    streamToken O'/'; output+=$g_returnString
+                    streamToken V${startingDate:5}; output+=$g_returnString
+                fi
+                # This concludes the '/' processing.
+                ;;
+              :) # prefix list
+                 #TODO: Accommodate a range set (in the future), whose rhs would be approximately ^:[0-9,:;-]+
+                [[ $rhs =~ ^$nextChar([0-9,]+)(.*) ]]
+                value+=$nextChar${BASH_REMATCH[1]}
+                rhs=${BASH_REMATCH[2]}
+                streamToken V$value; output+=$g_returnString
+                ;;
+              -) # date, numeric range or subtraction operator
+                oldRhs=$rhs
+                # Check for a date.
+                if [[ $oldRhs =~ ([0-9]{4}-[0-9]{1,2}-[0-9]{1,2})(.*) ]]; then
+                    value=${BASH_REMATCH[1]}
+                    rhs=${BASH_REMATCH[2]}
+                    streamToken V$value; output+=$g_returnString
+                else
+                    # Not a date. Either a numeric range or arithmetic.
+                    #TODO: Recognize solitary NULLs
+                    [[ $rhs =~ ^$nextChar([0-9]*)(.*) ]]
+                    following=${BASH_REMATCH[1]}
+                    ending=${BASH_REMATCH[2]}
+                    if [[ -n $following ]]; then
+                        # There are some following digits. In deciding what to do, we venture into semantic analysis to observe that
+                        # a numeric range is only valid when it occurs as the sole token after a comparator (in the given NCV construct).
+                        # Also, an integer subtraction shouldn't occur in the same context, by the "Contrapositive of Occam's razor" discussed elsewhere.
+                        # Logic: if "nothing ahead, i.e. empty or closeParen" and "comparator-or-nothing behind" ...
+                        if [[ (-z $ending || "$ending" =~ ^\ ?$g_rightParen) && ($output =~ ([\<\>=]|NCV[0-9]+${tokenDelimiter})$) ]]; then
+                            # numeric range
+                            value+=$nextChar$following
+                            rhs=$ending
+                            streamToken V$value; output+=$g_returnString
+                        else
+                            # arithmetic subtraction     # TODO: What about arithmetic negation?
+                            rhs=$following$ending    # remove leading minus sign
+                            streamToken V$value; output+=$g_returnString
+                            streamToken O'-'; output+=$g_returnString
+                        fi
+                    else
+                        # There are no following digits (perhaps a name/word follows)
+                        rhs=$following$ending
+                        streamToken V$value; output+=$g_returnString
+                        streamToken O'-'; output+=$g_returnString
+                    fi
+                fi
+                ;;
+              *) # Anything else means it is a single int or float. Buffer it because it could turn out to be a "123 Main St".
+                bufferToken "$value" "N"
+                ;;
+            esac
+            continue
+        fi
+
+        # '@'-delimited filenames {{{1
+        if [[ $rhs =~ ^@([^@]*)@(.*) ]]; then
+            $rhs =~ ${BASH_REMATCH[2]}
+            streamToken $letter${BASH_REMATCH[1]}$letter; output+=$g_returnString
+            continue
+        
+        # $-marked variables. The intention: Force them to be expanded to a name. {{{1
+        elif [[ "$rhs" =~ ^\$([*a-z][[:alnum:]]*)(.*) ]]; then
+            local value=${BASH_REMATCH[1]}
+            rhs=${BASH_REMATCH[2]}
+            streamToken E$value; output+=$g_returnString     # The "E" tag is like the "W" except we intend to FORCE expansion.
+            continue
+        fi # }}}}
+
+        # Single-character operators
+        # TODO: Make this list exhaustive. Make sure alternate meanings of these characters are ruled out before this point.
+        if [[ $letter =~ [-+*/%^\&|] ]]; then
+            tagIfBeginNCV; insideNCV=$?
+            streamToken O$letter; output+=$g_returnString
+            [[ $rhs =~ ^"$letter"(.*) ]]
+            rhs=${BASH_REMATCH[1]}
+            continue
+        
+        # Markup spaces with a special descriptor
+        # TODO: Adjust the caller in db_functions to look for the descriptor and handle it properly.
+        elif [[ $letter =~ [\ ] ]]; then
+
+            # Advance through the input stream
+            [[ $rhs =~ ^"$letter"(.*) ]]
+            rhs=${BASH_REMATCH[1]}
+
+            # Normally we stream the space immediately as an ordinary token...
+            if [[ -z $g_compoundTokenBuffer ]]; then
+                if [[ ${rhs:0:1} =~ [\)B] ]]; then
+                    tagIfEndNCV; insideNCV=$?
+                fi
+                streamToken S; output+=$g_returnString
+            # ...but if we are inside a space-containing ("compound") value, we add it to the value buffer
+            else
+                bufferSpace
+            fi
+
+            continue
+
+        # Any material not caught by the above. TODO: In a CORRECT input string nothing should get here!
+        else
+            tagIfBeginNCV; insideNCV=$?
+            output+=$letter
+            [[ $rhs =~ ^"$letter"(.*) ]]
+            rhs=${BASH_REMATCH[1]}
+            continue
+        fi
+
+    done
+
+    if ((nestingLevel!=0)); then
+        echo Parsing error: Unbalanced parentheses in argument "$1". > /dev/stderr
+        return 1
+    fi
+
+    # Don't fall off the end of the input without flushing the buffer.
+    if [[ -n $g_compoundTokenBuffer ]]; then
+        streamToken; output+=$g_returnString   # Invoke with no arguments to force a buffer flush only.
+    fi
+
+    tagIfEndNCV; insideNCV=$?
+
+    g_returnString=$output
+    return 0
+}
+
+
+####################################################################################
+# retrieveFullToken
+#
+# Given a value token of string-like type, advance the lexer through all adjacent pieces of quoted
+# and non-quoted text in order to obtain the complete token
+####################################################################################
+function retrieveFullToken()
+{
+    while ((1)); do
+
+        # Handle the present "feature" in the token: an embedded NULL indicator, a quoted piece or an orphaned quote character
+
+        # Check for embedded NULL
+        if [[ ($rhs =~ ^-) && ($rawToken =~ ,$) ]]; then
+            # Append it, leaving the following comma in place if there is one.
+            rawToken+="-"
+            rhs=${rhs:1}
+
+        # Check for a quoted literal: match the quote to its companion
+        elif [[ $rhs =~ ^${letter}([^${letter}]*)${letter}(.*) ]]; then
+            rawToken+=${BASH_REMATCH[1]}    # Strip off the surrounding quotes before tokenizing.
+            rhs=${BASH_REMATCH[2]}
+
+        # Otherwise assume we have an orphaned " or ' character. Peel it off.
+        else
+            rawToken+=$letter
+            rhs=${rhs:1}
+        fi
+
+        # Check the termination conditions
+        if [[ ! $rhs =~ ^[[:alnum:],_%] ]]; then
+            break
+        fi
+
+        # If not terminated, advance through the following "featureless" part of the token
+        [[ $rhs =~ ^([[:alnum:],_%]+)(.*) ]]
+        rawToken+=${BASH_REMATCH[1]}
+        rhs=${BASH_REMATCH[2]}
+
+        # Check the termination conditions
+        letter=${rhs:0:1}
+        if [[ ! $letter =~ [-\"\'] ]]; then
+            break
+        fi
+    done
+}
+
+
+####################################################################################
+# convertEscapeSequences
+#
+# There are two ways to insert special characters as literals: quoting them (individually or in context),
+# and backslash-escaping them. Here we eliminate backslash escapes so the parser only needs to manage
+# the former. We convert the C-style escape symbols to their underlying values (for instance, backslash-en
+# becomes literal newline) and for other escaped characters we change the backslash to a pair of quotes.
+####################################################################################
+function convertEscapeSequences()
+{
+    while [[ $rhs =~ $g_escapeChar(.) ]]; do
+
+        # Extract the special character and choose a quoting character.
+        local specialChar=${BASH_REMATCH[1]} quoteChar="'"
+        if [[ $specialChar == "'" ]]; then quoteChar='"'; fi
+
+        # Determine the replacement text.
+        case $specialChar in
+            n) replacement=$'\n' ;;
+            t) replacement=$'\t' ;;
+            r) replacement=$'\r' ;;
+            f) replacement=$'\f' ;;
+            v) replacement=$'\v' ;;
+            b) replacement=$'\b' ;;
+            [%_]) replacement="\\"$specialChar ;;     # Retain the backslash.  # TODO: The SQL generator needs to add a trailing subclause of "ESCAPE '\'"
+                # TODO: Both of these character pairs \[%_] can also mess up the parsing below. Change the parser to fix this.
+            # All other escaped characters will be admitted as literals
+                # TODO: Literal single quotes should be represented in SQL as '' (quote-pairs)
+            *) replacement=${BASH_REMATCH[1]} ;;
+        esac
+
+        # Surround the replacement text with quotes
+        rhs=${rhs/$g_escapeChar$specialChar/$quoteChar$replacement$quoteChar}
+    done
+
+}
+
+################################################################################
+# streamToken  token  [...]
+#
+# Adds a sequence of marked-up tokens to the token stream, first checking whether
+# there is a pending buffer that needs to be flushed to the stream.
+# Without arguments, will simply flush the pending buffer to the stream.
+#
+# Also tracks the prior token for (future) use in subsequent parsing logic.
+#
+# TODO: Factor out the markup to a separate argument, giving the following syntax:
+#       streamToken markup token [...]
+################################################################################
+function streamToken()
+{
+    g_returnString=""
+
+    # If there is a complete value sitting in the buffer, then we flush it to the token stream.
+    if [[ -n $g_compoundTokenBuffer ]]; then
+        local needTrailingSpace=$FALSE
+
+        # Flushing the buffer to the stream consists of 4 steps.
+
+        # 1. The buffer builder prefetches trailing spaces as it builds up the compound value,
+        # so it might terminate with a superfluous space. If so, pull it off and append it as a regular space token.
+        if [[ $g_compoundTokenBuffer =~ (.*)" "$ ]]; then
+            g_compoundTokenBuffer=${BASH_REMATCH[1]}
+            needTrailingSpace=$TRUE      # add the space token in just a moment
+        fi
+
+        # 2. Append the buffered token.
+        output+=$g_compoundTokenBuffer
+
+        # 3. Empty the buffer
+        g_compoundTokenBuffer=""
+        g_compoundTokenType=""
+
+        # 3.5. Parser bookkeeping: If the next token type is a "big" boolean operator or a ')', mark end of NCV.
+        # (If there is no next token the mark will be added at the end of the main parsing function.)
+        if [[ ${1:0:1} =~ [\)B] ]]; then
+            tagIfEndNCV; insideNCV=$?
+        fi
+
+        # 4. If required by step 1, add a space token to the stream.
+        if ((needTrailingSpace)); then
+            streamToken S; output+=$g_returnString
+            g_returnString=""
+        fi
+    fi
+
+    # Append the supplied token(s) to the stream and do some bookkeeping
+    while [[ -n $1 ]]; do
+        g_prevToken=$g_currToken
+        g_currToken=$1
+        g_returnString+=$tokenDelimiter$1
+        shift
+    done
+}
+
+
+###############################################################################
+# bufferToken  <newToken>  <newTokenType>
+# bufferSpace  (no arguments)
+#
+# Variants of streamToken for use with constant-string values and word sequences.
+# The value is grown inside a buffer so that the complete value can be appended 
+# to the stream as a single token once we have the complete token.
+#
+# This technique allows us to accommodate unprotected, unescaped spaces
+# in these contexts. This is a workaround to our normal process in which
+# we always treat naked spaces as token delimiters,
+###############################################################################
+function bufferToken()
+{
+    local newToken=$1
+    local newTokenType=$2
+    local initialTokenType=$g_compoundTokenType
+
+    # Two steps: (1) Set or reset the token type (2) Buffer the token piece handed to us
+
+    # Step (1) breaks down two ways depending on whether the buffer is currently empty.
+    # If the buffer is empty, set the token type
+    if [[ -z $g_compoundTokenBuffer ]]; then
+        g_compoundTokenType=$newTokenType
+        g_compoundTokenBuffer=${tokenDelimiter}$newTokenType
+
+    # If the buffer is not empty, it has been proven compound. Update our guess as to the token type.
+    else
+
+        # "W" indicators go stale, changing to either "X" or "V" for compound tokens. So if the buffer has a "W" at flush time, we know it is not compound.
+        if [[ $initialTokenType == "W" ]]; then
+
+            # Another "W" for an already-W buffer means it's a compound expandable ("X") from what we can tell **SO FAR**.
+            if [[ $newTokenType == "W" ]]; then
+                updateCompoundTokenType "X" 
+
+            # Anything else would make this a "V"
+            else
+                updateCompoundTokenType "V" 
+            fi
+
+        # A pre-existing "X" will either remain "X" or become "V".
+        elif [[ $initialTokenType == "X" ]]; then
+
+            # A "W" token preserves the compound type as "X"
+            if [[ $newTokenType == "W" ]]; then
+                :
+
+            # Anything else updates the type to "V".
+            else 
+                updateCompoundTokenType "V" 
+            fi
+
+        # Anything else becomes "V" (only V-likes (true V's, ints, floats, etc.) should get here)
+        else
+            updateCompoundTokenType "V" 
+        fi
+    fi
+
+    # Step (2): In all cases, add the new token to the buffer
+    g_compoundTokenBuffer+=$newToken
+}
+
+function bufferSpace()
+{
+    g_compoundTokenBuffer+=" "
+}
+
+
+##### updateCompoundTokenType  <newType>     -- helper function for the above
+function updateCompoundTokenType()
+{
+    local initialTokenType=${g_compoundTokenBuffer:1:1}
+
+    # Update the standalone value type and its place in the buffer
+    g_compoundTokenType=$1
+    g_compoundTokenBuffer=${g_compoundTokenBuffer/$initialTokenType/$g_compoundTokenType}
+}
+
+################################################################################
+# tagIf{Begin,End}NCV
+# Discover, delimit, and describe all NCV-type expressions
+################################################################################
+function tagIfBeginNCV()
+{
+    if ((! insideNCV)); then
+        streamToken 'NCV'$((++NCVCount)); output+=$g_returnString
+        return 1
+    else
+        return $insideNCV
+    fi
+}
+
+# Determine whether the NCV-type expression is NCV, CV or V, and encode that in the end tag.
+function tagIfEndNCV()
+{
+    local NCVContent NCVType
+
+    if ((insideNCV)); then
+
+        # Grab the current NCV expression from the result-in-progress
+        [[ $output =~ ${markupIndicator}NCV${NCVCount}(.*) ]]
+
+        # Determine its type
+        NCVContent=${BASH_REMATCH[1]}
+        if [[ $NCVContent =~ ^([^=\<\!\>]*) ]]; then
+            if [[ -n ${BASH_REMATCH[1]} ]]; then
+                NCVType=NCV
+            else
+                NCVType=CV
+            fi
+        else
+            NCVType=V
+        fi
+        # Encode 
+        streamToken '/'$NCVType$NCVCount; output+=$g_returnString
+
+        # Reset the lexing state
+        ambiguousPercentSign=$FALSE
+        g_returnString=""    # Needs to be clean inside nested function calls
+        return 0
+
+    else
+        return $insideNCV
+    fi
+}
+
