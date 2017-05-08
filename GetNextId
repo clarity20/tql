@@ -44,7 +44,7 @@ if (($?)); then
     exit 0
 fi
 
-RAW_RESULT=$(mysql $g_mysqlOptions -t -e "$DB_COMMAND") || exit $?
+RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND") || exit $?
 
 foldResultSet "$RAW_RESULT" "$sortInstructions"
 

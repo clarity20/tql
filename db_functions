@@ -63,7 +63,7 @@ g_defaultAlnumCodes=qa
 g_ACTION=$defaultAction
 g_warnOnSelectAll=$TRUE      # For large tables, enable a warning message when a query would return the full table. Avoid this for small lookup-type tables.
 
-g_mysqlOptions=""
+g_dbClientOptions=""
 g_mainConjunction=AND
 
 # Global scratch space for functions that need to "return" string values. This is slightly faster than
@@ -170,10 +170,10 @@ function parseCompletely()
            fi ;;
     esac
 
-    # Pass on any options for the mysql binary
-    g_mySqlOptions=""
+    # Pass any special options to the db client
+    g_dbClientOptions=""
     isOptionOn noHeader $OPTIONS
-    if (($?)); then g_mysqlOptions+="-N "; fi
+    if (($?)); then g_dbClientOptions+="-N "; fi
 
 #TODO: We defer where-expanding to generateWhereClause
 #    # Get the column names from the where-particles
@@ -1389,7 +1389,7 @@ function generateWhereClause()
 
                 # We build the SQL fragment for the current NCV construct. This means deciding when to quote a value, and constructing
                 # a grammatically correct piece of SQL based on whether the value is a singleton, list, interval, NULL, regex, regex list,
-                # or a negation of one of these. In addition, we massage the values where necessary because mysql is picky about
+                # or a negation of one of these. In addition, we massage the values where necessary because the db client can be picky about
                 # certain formatting issues, e.g. floats cannot lead with a decimal point and timestamps must be laid out rather carefully.
 
                 # Invoke the main SQL generation code ...
@@ -1601,7 +1601,7 @@ function processNamedNCVArgument()
     elif ((_wheres_bIsList)); then
         quoteListIfNeeded "$value" $code; value=$g_returnString
 
-        # Format floating-point lists for mysql
+        # Format lists of floating-point values
         formatValueIfDecimalList "$value"; value=$g_returnString
 
         # To post-sort the result set, we record the values (without quotes) and the column name, always using the FIRST value list we encounter.
@@ -1695,7 +1695,7 @@ function processUnnamedNCVArgument()
 
     if ((valueType>0)); then
 
-        # Format decimal and decimal list values for mysql
+        # Format decimal values and lists of decimal values
         if ((valueType==3)); then
             formatValueIfDecimal "$value"; value=$g_returnString
         elif ((valueType==4)); then
@@ -1976,8 +1976,8 @@ function loadFileAsCommaList()
 #         where sortInstructions has the form columnsToSortBy:valuesToSortBy
 #     and if either side is blank, both bracketed args above are ignored
 #
-# Assumptions: The string passed in is a MYSQL result set in table format
-#     (see mysql's "-t" option) complete with ascii-art boxes. The
+# Assumptions: The string passed in is a result set in tabular format
+#     (e.g. mysql's "-t" option) complete with ascii-art boxes. The
 #     topmost row is the column header and the rest contain the results.
 #
 # NOTE: For a truly perfect implementation, the running of the query and
@@ -1992,7 +1992,7 @@ function foldResultSet()
         return 0
     fi
 
-    # Deal with the DOS/Unix line-endings discrepancy as reflected in mysql result sets
+    # Be sensitive to the DOS/Unix line-endings discrepancy
     local newLine=$'\n'
     if [[ $1 =~ $'\r'$'\n' ]]; then newLine=$'\r'$'\n'; fi
 
@@ -2064,7 +2064,7 @@ function foldResultSet()
 
         # TODO: Eventually we should address the problem of the key column not always being the first column.
         # TODO: In that case, assuming we want to fold in the first place (we can make that optional with a user option "dontFold | raw | <etc.>")
-        # TODO: its probably best to pre-adjust the SELECT_CLAUSE before calling "mysql" to give a resultSet that's as easy as possible to manipulate, and
+        # TODO: its probably best to pre-adjust the SELECT_CLAUSE before invoking the db engine to get a resultSet that's as easy as possible to manipulate, and
         # TODO; then tweak it to the intended result. That's because to do all the manipulation right here is pretty tricky if the key column is sitting in the middle
         # TODO: and we want to leave it in place on the first folded chunk of results (if it fits there) while displaying it **first** on the subsequent folded chunks.
         # TODO: So let's propose a scheme where we've pre-adjusted it by putting the key column first and some placeholder in the key column's user-intended position.

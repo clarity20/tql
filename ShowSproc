@@ -55,7 +55,7 @@ if (($?)); then
 fi
 
 # Run the query. Special processing will be necessary because the stored proc bodies can be large and will contain embedded newlines.
-RAW_RESULT=$(mysql $g_mysqlOptions -t -e "$DB_COMMAND") || exit $?
+RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND") || exit $?
 
 # Reduce the result set to a simple pair of columns -- the Sproc names and their bodies.
 # (1) Remove the horizontal lines from the result set. (Replaces the slower grep -v.)
