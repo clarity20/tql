@@ -1004,11 +1004,11 @@ function parseOutOptions()
         eval arg=\$$idx      ## see Bash manual, "Indirect References"
 
         # Identify the "normal" option arguments; "-" plus the option name and sometimes a value
-        if [[ "$arg" =~ ^-[[:alnum:]] ]]; then
+        if [[ "$arg" =~ ^[-]+[[:alnum:]] ]]; then
 
             # For options having settable values we accept 3 forms:  -op=Val  -opVal  or  -op Val
             arg=${arg/=/}                         # Squeeze out the = sign
-            if [[ $arg =~ ^-[Ll]$ ]]; then        # Squeeze out the space, i.e. add the following argument
+            if [[ $arg =~ ^[-]+[Ll]$ ]]; then        # Squeeze out the space, i.e. add the following argument
                 ((++idx))
                 eval newArg=\$$idx
                 if [[ ! $newArg =~ ^[0-9]+$ ]]; then
@@ -1019,7 +1019,7 @@ function parseOutOptions()
             fi
 
             # Add the option to the internal list
-            OPTION_LIST=$OPTION_LIST":${arg//-/}"
+            OPTION_LIST=$OPTION_LIST":${arg##+(-)}"
             ((retCode++))
 
         # Interpret the special "*" argument as the selectAll option
