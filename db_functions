@@ -4,18 +4,12 @@
 # TODO: Finish factoring out the constants and configs that precede the function parseCompletely()
 # TODO: into a separate initialization module. Insist on config settings; do not default to the user environment.
 
-# (1) Set some variables locally if they are not set in the environment
+# Set some variables locally if they are not set in the environment
 : ${BASHFUNC_HOME:=$HOME}
 : ${TQL_HOME:=$HOME/tql}
 # Override the PATH with the locations of this project installation and your GNU/Linux coreutils
 # TODO: Clarify exactly which versions of the UNIX-like utilities are required.
 PATH=$TQL_HOME:$BASHFUNC_HOME/bin:/usr/local/bin:/usr/bin
-
-# (2) If any of the DB connection parameters are not set, try to look them up in the properties file
-if [[ -z $DBUN || -z $DBPW || -z $DBHOST || -z $DBNAME ]]; then
-    source $TQL_HOME/dbConnectionParms
-    loadDbConnectionParms || exit 6
-fi
 
 # Enable extended file globbing. This allows us to write shorter, simpler code in a few places.
 shopt -s extglob
@@ -111,7 +105,7 @@ function parseCompletely()
 
     shift 4
 
-    # Extract the options from the command line
+    # Read the command-line options into a data vector
     parseOutOptions "$@"
     if (($?)); then
         # return string contains list of options followed by symbolic list of non-option args
@@ -120,6 +114,14 @@ function parseCompletely()
     fi
 
     # If the UPDATE option is active, prepare the SET clause
+#TODO: Instead of bIsUpdate we should use an "enumeration" / function getQueryType to indicate the query type.
+#TODO: A 0/1 indicator is not adequate when we introduce DELETE or INSERT queries.
+# So, for example:
+#    getQueryType; queryType=$?
+#   if ((queryType == queryType_UPDATE)); then
+#       ....
+#   fi
+#
     isOptionOn u $OPTIONS
     bIsUpdate=$?
     if ((bIsUpdate)); then
@@ -279,7 +281,6 @@ function parseCompletely()
 #    generateWhereClause "$expandedWhereCols" "$whereCodes" "$@"
     generateWhereClause "$@"
     retVal=$?
-    parsedWheres=$g_returnString
     case $retVal in
       2) echo Parsing error: Unrecognized argument.
          return $((retVal+10)) ;;
@@ -288,7 +289,7 @@ function parseCompletely()
       *) # Parsing was successful.
          ;;
     esac
-
+    parsedWheres=$g_returnString
     sortInstructions="${parsedWheres#*$delim}"
     WHERE_CLAUSE=$WHERE_PRECLAUSE"${parsedWheres%$delim*}"
 
@@ -315,13 +316,14 @@ function parseCompletely()
         return 13
     fi
 
+    # Construct the LIMIT clause
     isOptionOn "l[0-9]+" "$OPTIONS" -show; LIMIT_CLAUSE=$g_returnString
     if [[ -n "$LIMIT_CLAUSE" ]]; then
         LIMIT_CLAUSE="LIMIT "${LIMIT_CLAUSE#[Ll]}
     fi
     : ${LIMIT_CLAUSE:=$placeholderForEmpty}
 
-    # Warn about queries that would return every single record, if the warning makes sense for the table.
+    # If the WHERE clause is effectively empty, provide a warning before returning an unrestricted result set
     if [[ ( $WHERE_CLAUSE == $placeholderForEmpty ) && ( ! $LIMIT_CLAUSE =~ [1-9] ) && ( ! $ACTION_CLAUSE =~ "count(*)" ) && ( $g_warnOnSelectAll == 1 ) ]]; then
         echo WARNING: Query is unrestricted, every record will be returned! > /dev/stderr
         read -n1 -p "Continue (y/n)? " doContinue > /dev/stderr
