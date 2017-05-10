@@ -1,4 +1,29 @@
+TQL has developed into such a large project that a full TODO list would be endless.
+This is due in part to the fact that there are endless ways SQL can be improved
+upon for terseness and general ease-of-use for the power user. The number-one
+priority for this project has always been to build out the feature set, making the
+result as useful as possible. Engineering considerations are important but not 
+primary.
+
+Style issues
+    Why bash? It was fine when this project was just a few small scripts that made
+        a few basic DB queries easier. A rewrite in, say, Python would be nice.
+    Line wrapping needs to be improved
+    Group related functions into separate files
+    Settle upon a single convention for variable naming:
+        Capitalized versus lowercase names
+        When & how to indicate variable scope in the name
+
+Documentation
+    The README should be mostly a detailed usage document
+    Revisit the comments for accuracy and clarity, especially function headers
+    Write a nice history of the project, to be posted in a blog-like format
+
+Features
+    <Lots of hand-scrawled ideas to be transcribed here>
+
 Automated testing
+    Flesh out testing of the main module. Use new feature work as a springboard.
     Integrate with a testing framework such as awesome-shell's "bats"
 
 
