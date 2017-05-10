@@ -1,24 +1,24 @@
 # vim: set filetype=sh:
 
 # Begin with configuration and initialization.
-# TODO: Finish factoring out the constants and configs that precede the function parseCompletely()
-# TODO: into a separate initialization module. Insist on config settings; do not default to the user environment.
+# TODO Finish factoring out the constants and configs that precede the function parseCompletely()
+# TODO into a separate initialization module. Insist on config settings; do not default to the user environment.
 
 # Set some variables locally if they are not set in the environment
 : ${BASHFUNC_HOME:=$HOME}
 : ${TQL_HOME:=$HOME/tql}
 # Override the PATH with the locations of this project installation and your GNU/Linux coreutils
-# TODO: Clarify exactly which versions of the UNIX-like utilities are required.
+# TODO Clarify exactly which versions of the UNIX-like utilities are required.
 PATH=$TQL_HOME:$BASHFUNC_HOME/bin:/usr/local/bin:/usr/bin
 
 # Enable extended file globbing. This allows us to write shorter, simpler code in a few places.
 shopt -s extglob
 
 # Locate isArgOfType.
-# TODO: Phase this out; bring isArgOfType into the sqlUtils code
-source $BASHFUNC_HOME/script_functions
+# TODO Phase this out; bring isArgOfType into the sqlUtils code
+source $TQL_HOME/script_functions
 
-# TODO: Phase in the following idea more comprehensively, and add a mnemonic/convention for CONSTant values.
+# TODO Phase in the following idea more comprehensively, and add a mnemonic/convention for CONSTant values.
 # Introduce some variable naming conventions to compensate for BASH's shortcomings with respect to scoping.
 # The intention is to maximize readability and maintainability and to minimize shadowing bugs.
 # (1) Use the prefix g_ to mean "global".
@@ -26,9 +26,12 @@ source $BASHFUNC_HOME/script_functions
 #     and everything lower in the call stack, and used in both.
 # (3) Otherwise, variable names follow no explicit convention.
 
-# Universal sqlUtils constants
-declare -r TRUE=1
-declare -r FALSE=0
+# Universal TQL constants. TODO Move more of the constants below into this file.
+if ((g_sourcedGlobals!=1)); then
+    source $TQL_HOME/tql_globals
+    g_sourcedGlobals=1
+fi
+
 declare -r delim=$'\n'
 declare -r columnGroupDelim="__"
 declare -r ILLEGAL_DEFAULT_ALPHA=illegalDefaultAlpha
@@ -65,9 +68,9 @@ g_mainConjunction=AND
 g_returnString=""
 
 # Lists of substitution macros used to expand possibly-abbreviated names of DB columns or tables
-#TODO: This is db specific; move it to a separate config.
-#TODO: Format: two space-delimited columns: expr to find, expr to substitute.
-# TODO: Would be really nice to put the ^... regexes at the top, followed by the ...$ regexes.
+#TODO This is db specific; move it to a separate config.
+#TODO Format: two space-delimited columns: expr to find, expr to substitute.
+# TODO Would be really nice to put the ^... regexes at the top, followed by the ...$ regexes.
 # Then we could pick them off first and avoid false positives later on when recursively expanding the left and right pieces.
 g_columnExpansionMacros=\
 "
@@ -114,8 +117,8 @@ function parseCompletely()
     fi
 
     # If the UPDATE option is active, prepare the SET clause
-#TODO: Instead of bIsUpdate we should use an "enumeration" / function getQueryType to indicate the query type.
-#TODO: A 0/1 indicator is not adequate when we introduce DELETE or INSERT queries.
+#TODO Instead of bIsUpdate we should use an "enumeration" / function getQueryType to indicate the query type.
+#TODO A 0/1 indicator is not adequate when we introduce DELETE or INSERT queries.
 # So, for example:
 #    getQueryType; queryType=$?
 #   if ((queryType == queryType_UPDATE)); then
@@ -177,7 +180,7 @@ function parseCompletely()
     isOptionOn noHeader $OPTIONS
     if (($?)); then g_dbClientOptions+="-N "; fi
 
-#TODO: We defer where-expanding to generateWhereClause
+#TODO We defer where-expanding to generateWhereClause
 #    # Get the column names from the where-particles
 #    getWhereColumnList "$@"
 #    whereAbbrs=$g_returnString
@@ -194,8 +197,8 @@ function parseCompletely()
         TABLE_NAMES=${TABLE_NAMES/%+( )+([[:alpha:]])}
 
         # Obtain the table description so we can expand the column names and determine their data types
-        # TODO: This looks at the first table name only.  Might revisit this later. N.B. expand() requires a fixed-width Desc, so catting
-        # TODO: the separate desc files together would not work. Perhaps make Desc adjust its column-width values whenever a header line is encountered...
+        # TODO This looks at the first table name only.  Might revisit this later. N.B. expand() requires a fixed-width Desc, so catting
+        # TODO the separate desc files together would not work. Perhaps make Desc adjust its column-width values whenever a header line is encountered...
         loadMasterExpansionList $TQL_HOME/tableDesc/${TABLE_NAMES%%,*}
 
 #MMMM: Defer where-expanding to generateWhereClause
@@ -239,7 +242,7 @@ function parseCompletely()
 
         else
             # Expand the SELECT clause column names
-# TODO: Eliminate "columnGroupDelim" by splitting up the SELECTs here and calling parse() on each one inside a loop, expand()ing where necessary.
+# TODO Eliminate "columnGroupDelim" by splitting up the SELECTs here and calling parse() on each one inside a loop, expand()ing where necessary.
 # Currently, expand() naively splits the SELECTs on commas which is not correct in general. We should split only on those commas
 # that are neither quoted nor escaped and which are not inside parentheses. Progress toward that end might include the following
 # little shell experiment which identifies the parenthesized commas and replaces them with a temp marker:
@@ -277,7 +280,7 @@ function parseCompletely()
     fi
 
     # Build the core WHERE-clause by lexing, parsing and expanding the arguments and translating to SQL.
-#TODO: Defer (etc.):
+#TODO Defer (etc.):
 #    generateWhereClause "$expandedWhereCols" "$whereCodes" "$@"
     generateWhereClause "$@"
     retVal=$?
@@ -649,7 +652,7 @@ function expandAbbreviatedNames()
                 _expand_nameRegex="${new[*]}"
                 IFS=$OLDFS
 
-                #TODO: Move this out one level?
+                #TODO Move this out one level?
                 set +f
 
                 # Now we extract the matching entries from the full list of candidates
@@ -705,8 +708,8 @@ function expandAbbreviatedNames()
 
         # If all of the above techniques failed, put the name in single quotes and set an error code
         # so the caller can either pass it through silently as a string literal or handle it as he desires.
-        # TODO: Quick fix for now: DO NOT quote the arg. Let it be evaluated. Eventually, let the caller try to make better sense of it
-        # TODO: by trying to parse out function names, embedded column names, etc.
+        # TODO Quick fix for now: DO NOT quote the arg. Let it be evaluated. Eventually, let the caller try to make better sense of it
+        # TODO by trying to parse out function names, embedded column names, etc.
         if ((numCandidates == 0)); then
             finalNames[nameCount]=$nameAbbr    #"'$nameAbbr'"
             finalCodes[nameCount]=YY
@@ -854,7 +857,7 @@ function generateTableNameMatches()
 function generateColumnNameMatches()
 {
     # Using the name regex, pull the matching column names plus their type descriptions and default values from the full table description
-    # TODO: For now we will ignore the first column, the table name. In a multi-table scenario we would need it.
+    # TODO For now we will ignore the first column, the table name. In a multi-table scenario we would need it.
 
     OLDFS=$IFS; IFS=$'\n'
     i=0
@@ -1346,12 +1349,12 @@ function generateWhereClause()
     # Load the parser function, just once
     if [[ $g_haveParser == $FALSE ]]; then
         g_haveParser=$TRUE
-        source $TQL_HOME/parse_functions  ## TODO: Dangerous variable scoping issues here!!! This should be moved to the caller.
+        source $TQL_HOME/parse_functions  ## TODO Dangerous variable scoping issues here!!! This should be moved to the caller.
     fi
 
-#TODO: Since we will expand() the n-c-v particles below, we need to remove the expand() invocation way up above and the
-#TODO: expanded substitution(s) down here. This will change the behavior of the functions involved, so any supporting script that
-#TODO: calls these functions will have to be revisited.
+#TODO Since we will expand() the n-c-v particles below, we need to remove the expand() invocation way up above and the
+#TODO expanded substitution(s) down here. This will change the behavior of the functions involved, so any supporting script that
+#TODO calls these functions will have to be revisited.
 
     # Handle each argument in turn
     while [[ -n $1 ]]; do
@@ -1370,7 +1373,7 @@ function generateWhereClause()
 
             # Pull the next token from the parsed string
 
-            # TODO: Will everything besides spaces necessarily be tokenized? We assume so for now...
+            # TODO Will everything besides spaces necessarily be tokenized? We assume so for now...
             # Handle uncontained spaces
             if [[ $rhs =~ ^\ (.*) ]]; then
                 sql+=" "
@@ -1399,8 +1402,8 @@ function generateWhereClause()
                 # Literal lists             --> "AND/OR name IN (value1, value2, value3)"
                 # Literal singletons        --> "AND/OR name comparator value"
 
-        #### TODO: Try some error checking on the values, based on stuff like: code 0f --> float  /   code 0i --> integer
-        #### TODO: But not necessarily right here.
+        #### TODO Try some error checking on the values, based on stuff like: code 0f --> float  /   code 0i --> integer
+        #### TODO But not necessarily right here.
 
                 # Does this name-cmp-value argument have an explicit name?
                 if ((_wheres_bIsNameGiven)); then
@@ -1675,7 +1678,7 @@ function processUnnamedNCVArgument()
         IFS="$OLDIFS"
 
     elif ((_wheres_bIsRange)); then
-        # TODO: Ranges can be numeric or date ranges, but we only do integer- and alpha-type column inference,
+        # TODO Ranges can be numeric or date ranges, but we only do integer- and alpha-type column inference,
         # so that is all that will work here. Maybe some day we will add default float- and date-type columns.
         for singleCol in ${defaultNumCols[@]}; do
             code=${dftNumCodes[numDftNumCols]}
@@ -2023,7 +2026,7 @@ function foldResultSet()
     fi
 
     # Before folding, pre-sort the result set if a sort is needed
-    # TODO: Work in progress...
+    # TODO Work in progress...
     if [[ "$3" =~ ^[a-z] ]]; then
         :
     fi
@@ -2032,18 +2035,18 @@ function foldResultSet()
 #    if ((foldedWidth < 1)); then
     if ((resultWidth < COLUMNS)); then
         # No folding needed, the result is narrow enough for the screen
-        # TODO: If we've monkeyed with the column ordering of the result set for the reasons below, we need to clean up the monkeying before setting FOLDED_RESULT here.
+        # TODO If we've monkeyed with the column ordering of the result set for the reasons below, we need to clean up the monkeying before setting FOLDED_RESULT here.
         FOLDED_RESULT="$resultSet"
         echo "${FOLDED_RESULT//|/}"
         return 0
     else
 
         # Determine the width of the "key" column.
-        # TODO: This function currently assumes the key column is the first column. Change this function and its caller(s)
-        # TODO: so that this becomes a universally valid assumption, i.e. reorder the select clause before running the query!
+        # TODO This function currently assumes the key column is the first column. Change this function and its caller(s)
+        # TODO so that this becomes a universally valid assumption, i.e. reorder the select clause before running the query!
         [[ "$resultSet" =~ ^(\|[^|]*)\ \| ]]
         local KEY_HDR=${BASH_REMATCH[1]}
-        KEY_START=1   # TODO: figure this out for the general case.
+        KEY_START=1   # TODO figure this out for the general case.
         local KEY_WIDTH=${#KEY_HDR}
         ((KEY_WIDTH++))
 
@@ -2064,15 +2067,15 @@ function foldResultSet()
         # Useful recipe for a generic right-hand-side cut. You need to supply the field width; note the "${}":
         #printf -v FOLDED_RESULT "%${}s\n" ${FOLDED_RESULT//$'\n'${characterCounter:1:$KEY_WIDTH}/$'\n'}
 
-        # TODO: Eventually we should address the problem of the key column not always being the first column.
-        # TODO: In that case, assuming we want to fold in the first place (we can make that optional with a user option "dontFold | raw | <etc.>")
-        # TODO: its probably best to pre-adjust the SELECT_CLAUSE before invoking the db engine to get a resultSet that's as easy as possible to manipulate, and
-        # TODO; then tweak it to the intended result. That's because to do all the manipulation right here is pretty tricky if the key column is sitting in the middle
-        # TODO: and we want to leave it in place on the first folded chunk of results (if it fits there) while displaying it **first** on the subsequent folded chunks.
-        # TODO: So let's propose a scheme where we've pre-adjusted it by putting the key column first and some placeholder in the key column's user-intended position.
-        # TODO: Meanwhile, we'll retain our use of two row-major arrays, one for the key column and one for the rest of the result set, so the for-loop
-        # TODO: that prints everything can print as follows, line-by-line:    ${left side of main block} ${key block} ${right side of main block}.
-        # TODO: All we have to do is compensate for the placeholder in the main block by deleting the spaces and one of the field separators around it.
+        # TODO Eventually we should address the problem of the key column not always being the first column.
+        # TODO In that case, assuming we want to fold in the first place (we can make that optional with a user option "dontFold | raw | <etc.>")
+        # TODO its probably best to pre-adjust the SELECT_CLAUSE before invoking the db engine to get a resultSet that's as easy as possible to manipulate, and
+        # TODO then tweak it to the intended result. That's because to do all the manipulation right here is pretty tricky if the key column is sitting in the middle
+        # TODO and we want to leave it in place on the first folded chunk of results (if it fits there) while displaying it **first** on the subsequent folded chunks.
+        # TODO So let's propose a scheme where we've pre-adjusted it by putting the key column first and some placeholder in the key column's user-intended position.
+        # TODO Meanwhile, we'll retain our use of two row-major arrays, one for the key column and one for the rest of the result set, so the for-loop
+        # TODO that prints everything can print as follows, line-by-line:    ${left side of main block} ${key block} ${right side of main block}.
+        # TODO All we have to do is compensate for the placeholder in the main block by deleting the spaces and one of the field separators around it.
 
     fi
 
@@ -2081,13 +2084,13 @@ function foldResultSet()
     declare -a KEY_ARR
     OLDFS="$IFS"; IFS=$'\n'
     FOLDED_ARR=($FOLDED_RESULT)
-    KEY_ARR=($(cut -c2-$KEY_WIDTH <<< "$resultSet"))  # TODO: instead of cut, use a ${foo//???????/} construction (i.e. delete chars)
+    KEY_ARR=($(cut -c2-$KEY_WIDTH <<< "$resultSet"))  # TODO instead of cut, use a ${foo//???????/} construction (i.e. delete chars)
     local numFoldedLines="${#FOLDED_ARR[@]}"
     IFS="$OLDFS"
 
     # Print the contents in the right order (not the given order)
     local phaseShift currentLine
-    local numRawLines=$(echo "${resultSet:$KEY_WIDTH}" | wc -l) # TODO: instead of wc -l, use countChars($'\n')
+    local numRawLines=$(echo "${resultSet:$KEY_WIDTH}" | wc -l) # TODO instead of wc -l, use countChars($'\n')
     local numSections=$((numFoldedLines / numRawLines))
 
     # Proceed section by section
@@ -2130,7 +2133,7 @@ validate_id_or_name_regex()
 }
 
 # syntax: validate_args  minArgs  maxArgs  argSyntax
-# TODO: Make maxargs optional
+# TODO Make maxargs optional
 # $1 and $2 here are meant to designate the positional parms to this fcn, not to the caller
 validate_args()
 {

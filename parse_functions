@@ -1,7 +1,10 @@
 # vim:filetype=sh:fdm=marker:
 
-declare -r TRUE=1
-declare -r FALSE=0
+# Universal TQL constants. TODO Move more of the constants below into this file.
+if ((g_sourcedGlobals!=1)); then
+    source $TQL_HOME/tql_globals
+    g_sourcedGlobals=1
+fi
 
 # Define certain types of tokens
 declare -r g_ANDop='[&][&]'
@@ -22,8 +25,8 @@ declare -r g_escapeChar='\\'
 g_compoundTokenType=
 g_compoundTokenBuffer=
 
-#TODO: Define all markup flags up here. Try to make them all single-character. Instead of using "V"
-#TODO: to denote all constant values, be more specific about the value type.
+#TODO Define all markup flags up here. Try to make them all single-character. Instead of using "V"
+#TODO to denote all constant values, be more specific about the value type.
 
 ####################################################################################
 # The parsing/lexing routine for WHERE-clause arguments
@@ -135,7 +138,7 @@ function parseWhereArgument()
             # Now for the corner case. The comparator tells us that certain "%" characters we had assumed were SQL wildcards
             # were actually modulus operators (based on the distinction between r-values and l-values). We will fix
             # the token stream by splitting the surrounding token into two word/value tokens and an intervening "%" operator.
-            if ((ambiguousPercentSign)); then     # TODO: A perfect solution would wrap this in a while loop and decrement it by one each time.
+            if ((ambiguousPercentSign)); then     # TODO A perfect solution would wrap this in a while loop and decrement it by one each time.
                 [[ $output =~ (.*)${tokenDelimiter}v([^${tokenDelimiter}]*)(${tokenDelimiter}|$) ]]    # Format:   (pre-contents) marker (contents) (end-marker or end)
                 local oldToken=${BASH_REMATCH[2]}    # token with surrounding markup stripped away
                 local newTokenSet=""
@@ -172,15 +175,15 @@ function parseWhereArgument()
         # Mark boolean logic operators.
         if [[ "$rhs" =~ ^($g_ANDop)(.*) ]]; then
             rhs=${BASH_REMATCH[2]}
-            streamToken B'&'; output+=$g_returnString   # B& = boolean AND      # TODO: Caller expects "AND" not "B&"
+            streamToken B'&'; output+=$g_returnString   # B& = boolean AND      # TODO Caller expects "AND" not "B&"
             continue
         elif [[ "$rhs" =~ ^($g_ORop)(.*) ]]; then
             rhs=${BASH_REMATCH[2]}
-            streamToken B'|'; output+=$g_returnString   # B| = boolean OR       # TODO: Caller expects "OR" not "B|" 
+            streamToken B'|'; output+=$g_returnString   # B| = boolean OR       # TODO Caller expects "OR" not "B|" 
             continue
         fi
 
-        # TODO: Mark isolated (non-list) NULLs. Distinguish them from minus-sign operators...
+        # TODO Mark isolated (non-list) NULLs. Distinguish them from minus-sign operators...
 
         # Inside function calls 
         if [[ $funcNestingLevel -gt 0 ]]; then
@@ -193,7 +196,7 @@ function parseWhereArgument()
                 continue
 
             # All other chars are fcn args. Treat like "generic" chars for now.
-#TODO: Look for words that can be expanded. We will not look for lists or regex expressions; we don't think they can be inside function calls.
+#TODO Look for words that can be expanded. We will not look for lists or regex expressions; we don't think they can be inside function calls.
             else
                 output+=$letter
                 [[ $rhs =~ ^"$letter"(.*) ]]
@@ -283,8 +286,8 @@ function parseWhereArgument()
             rawToken+=${BASH_REMATCH[1]}     # Use plus-equals to keep the "-," (NULL) prefix if it's there 
             rhs=${BASH_REMATCH[2]}
 
-#TODO: Test single-char tokens, esp. "%" which can be the modulus operator or a single-character SQL regex. We'll assume the latter case holds
-#TODO: if and only if either the NCV or its RHS consists solely of "%".
+#TODO Test single-char tokens, esp. "%" which can be the modulus operator or a single-character SQL regex. We'll assume the latter case holds
+#TODO if and only if either the NCV or its RHS consists solely of "%".
 
             # Probe forward across all quoted pieces and embedded NULLs to make sure we have the complete token 
             if [[ ($rhs =~ ^[\"\']) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
@@ -303,7 +306,7 @@ function parseWhereArgument()
                 local secondPart=${rawToken#$firstPart%}
                 if [[ $firstPart =~ ^[a-z][[:alnum:]_]*$ && ( $secondPart =~ ^[a-z][[:alnum:]_]*$ || $secondPart =~ ^[0-9]+$ ) ]]; then
                 #if [[ $firstPart =~ ^[0-9]+$ && ( $secondPart =~ ^[0-9]+$ || $secondPart =~ ^[a-z][[:alnum:]_]*$ ) ]]; then
-                    # TODO: There remains an unhandled corner case where the second part is a word beginning with "*". What a pain!
+                    # TODO There remains an unhandled corner case where the second part is a word beginning with "*". What a pain!
                     # One quick hack of a fix would be to replace every "%*" with "% *" at the very top of this lexer...
                     ambiguousPercentSign=$TRUE
                     bufferToken "$rawToken" "v"    # use a small-v marker here to indicate the exceptional case
@@ -342,7 +345,7 @@ function parseWhereArgument()
                     local firstPart=${rawToken%%%*}
                     local secondPart=${rawToken#$firstPart%}
                     if [[ $firstPart =~ ^[0-9]+$ && ( $secondPart =~ ^[0-9]+$ || $secondPart =~ ^[a-z][[:alnum:]_]*$ ) ]]; then
-                        # TODO: There remains an unhandled corner case where first/second part is a word beginning with "*". What a pain!
+                        # TODO There remains an unhandled corner case where first/second part is a word beginning with "*". What a pain!
                         # One quick hack of a fix would be to replace "%*" with "% *" at the very top of this lexer...
                         ambiguousPercentSign=$TRUE
                         bufferToken "$rawToken" "v"  # use a small-v marker here to indicate the exceptional case
@@ -375,7 +378,7 @@ function parseWhereArgument()
                 rhs=${BASH_REMATCH[2]}
                 streamToken V$value; output+=$g_returnString
                 ;;
-              /) # date, date range, or division operator (TODO: timestamps)
+              /) # date, date range, or division operator (TODO timestamps)
                 local followingPart startingDate
                 # First we deal with tokens that begin yyyy/mm/dd
                 if [[ $oldRhs =~ ([0-9]{4}/[0-9]{1,2}/[0-9]{1,2})(.*) ]]; then
@@ -454,7 +457,7 @@ function parseWhereArgument()
                 # This concludes the '/' processing.
                 ;;
               :) # prefix list
-                 #TODO: Accommodate a range set (in the future), whose rhs would be approximately ^:[0-9,:;-]+
+                 #TODO Accommodate a range set (in the future), whose rhs would be approximately ^:[0-9,:;-]+
                 [[ $rhs =~ ^$nextChar([0-9,]+)(.*) ]]
                 value+=$nextChar${BASH_REMATCH[1]}
                 rhs=${BASH_REMATCH[2]}
@@ -469,7 +472,7 @@ function parseWhereArgument()
                     streamToken V$value; output+=$g_returnString
                 else
                     # Not a date. Either a numeric range or arithmetic.
-                    #TODO: Recognize solitary NULLs
+                    #TODO Recognize solitary NULLs
                     [[ $rhs =~ ^$nextChar([0-9]*)(.*) ]]
                     following=${BASH_REMATCH[1]}
                     ending=${BASH_REMATCH[2]}
@@ -484,7 +487,7 @@ function parseWhereArgument()
                             rhs=$ending
                             streamToken V$value; output+=$g_returnString
                         else
-                            # arithmetic subtraction     # TODO: What about arithmetic negation?
+                            # arithmetic subtraction     # TODO What about arithmetic negation?
                             rhs=$following$ending    # remove leading minus sign
                             streamToken V$value; output+=$g_returnString
                             streamToken O'-'; output+=$g_returnString
@@ -519,7 +522,7 @@ function parseWhereArgument()
         fi # }}}}
 
         # Single-character operators
-        # TODO: Make this list exhaustive. Make sure alternate meanings of these characters are ruled out before this point.
+        # TODO Make this list exhaustive. Make sure alternate meanings of these characters are ruled out before this point.
         if [[ $letter =~ [-+*/%^\&|] ]]; then
             tagIfBeginNCV; insideNCV=$?
             streamToken O$letter; output+=$g_returnString
@@ -528,7 +531,7 @@ function parseWhereArgument()
             continue
         
         # Markup spaces with a special descriptor
-        # TODO: Adjust the caller in db_functions to look for the descriptor and handle it properly.
+        # TODO Adjust the caller in db_functions to look for the descriptor and handle it properly.
         elif [[ $letter =~ [\ ] ]]; then
 
             # Advance through the input stream
@@ -548,7 +551,7 @@ function parseWhereArgument()
 
             continue
 
-        # Any material not caught by the above. TODO: In a CORRECT input string nothing should get here!
+        # Any material not caught by the above. TODO In a CORRECT input string nothing should get here!
         else
             tagIfBeginNCV; insideNCV=$?
             output+=$letter
@@ -648,10 +651,10 @@ function convertEscapeSequences()
             f) replacement=$'\f' ;;
             v) replacement=$'\v' ;;
             b) replacement=$'\b' ;;
-            [%_]) replacement="\\"$specialChar ;;     # Retain the backslash.  # TODO: The SQL generator needs to add a trailing subclause of "ESCAPE '\'"
-                # TODO: Both of these character pairs \[%_] can also mess up the parsing below. Change the parser to fix this.
+            [%_]) replacement="\\"$specialChar ;;     # Retain the backslash.  # TODO The SQL generator needs to add a trailing subclause of "ESCAPE '\'"
+                # TODO Both of these character pairs \[%_] can also mess up the parsing below. Change the parser to fix this.
             # All other escaped characters will be admitted as literals
-                # TODO: Literal single quotes should be represented in SQL as '' (quote-pairs)
+                # TODO Literal single quotes should be represented in SQL as '' (quote-pairs)
             *) replacement=${BASH_REMATCH[1]} ;;
         esac
 
@@ -670,7 +673,7 @@ function convertEscapeSequences()
 #
 # Also tracks the prior token for (future) use in subsequent parsing logic.
 #
-# TODO: Factor out the markup to a separate argument, giving the following syntax:
+# TODO Factor out the markup to a separate argument, giving the following syntax:
 #       streamToken markup token [...]
 ################################################################################
 function streamToken()

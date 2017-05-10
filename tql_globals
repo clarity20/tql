@@ -1,0 +1,5 @@
+# vim:filetype=sh:fdm=marker:
+
+declare -r TRUE=1
+declare -r FALSE=0
+
