@@ -201,7 +201,7 @@ function parseCompletely()
         # TODO the separate desc files together would not work. Perhaps make Desc adjust its column-width values whenever a header line is encountered...
         loadMasterExpansionList $TQL_HOME/tableDesc/${TABLE_NAMES%%,*}
 
-#MMMM: Defer where-expanding to generateWhereClause
+#TODO Defer where-expanding to generateWhereClause
 #        # Expand the WHERE clause column names
 #        expandColumnNames "$TABLE_NAMES" "$whereAbbrs"
 #        expandedNames=$g_returnString
@@ -1382,9 +1382,10 @@ function generateWhereClause()
             fi
 
             # NCV expressions
-            if [[ $rhs =~ ^${markupIndicator}NCV([0-9]+) ]]; then
+            if [[ $rhs =~ ^${tokenDelimiter}NCV([0-9]+) ]]; then
                 ncvCounter=${BASH_REMATCH[1]}
-                [[ $rhs =~ ^${BASH_REMATCH[0]}$markupIndicator(.*)$markupIndicator/([NC]*V)$ncvCounter$markupIndicator(.*) ]]
+
+                [[ $rhs =~ ^${BASH_REMATCH[0]}$tokenDelimiter(.*)$tokenDelimiter/([NC]*V)$ncvCounter(${tokenDelimiter}.*)?$ ]]
                 ncv=${BASH_REMATCH[1]}
                 ncvType=${BASH_REMATCH[2]}
                 rhs=${BASH_REMATCH[3]}
@@ -1419,14 +1420,14 @@ function generateWhereClause()
                 continue
 
             # Left parentheses
-            elif [[ $rhs =~ ^$markupIndicator$g_leftParen([0-9]+)$markupIndicator(.*) ]]; then
+            elif [[ $rhs =~ ^$tokenDelimiter$g_leftParen([0-9]+)$tokenDelimiter(.*) ]]; then
                 sql+="("
                 nestingLevel=${BASH_REMATCH[1]}      # not used yet, but maybe some day
                 rhs=${BASH_REMATCH[2]}
                 continue
 
             # Right parentheses
-            elif [[ $rhs =~ ^$markupIndicator$g_rightParen([0-9]+)$markupIndicator(.*) ]]; then
+            elif [[ $rhs =~ ^$tokenDelimiter$g_rightParen([0-9]+)$tokenDelimiter(.*) ]]; then
                 sql+=")"
                 nestingLevel=${BASH_REMATCH[1]}
                 rhs=${BASH_REMATCH[2]}
@@ -1434,11 +1435,11 @@ function generateWhereClause()
             fi
 
             # Logical operators
-            if [[ $rhs =~ ^${markupIndicator}AND$markupIndicator(.*) ]]; then
+            if [[ $rhs =~ ^${tokenDelimiter}B'&'$tokenDelimiter(.*) ]]; then
                 sql+=" AND"
                 rhs=${BASH_REMATCH[1]}
                 continue
-            elif [[ $rhs =~ ^${markupIndicator}OR$markupIndicator(.*) ]]; then
+            elif [[ $rhs =~ ^${tokenDelimiter}B'|'$tokenDelimiter(.*) ]]; then
                 sql+=" OR"
                 rhs=${BASH_REMATCH[1]}
                 continue
@@ -1446,7 +1447,7 @@ function generateWhereClause()
 
             # Uncontained/unbound literals
             #if [[ $rhs =~ ^[\"\'] ]]; then
-            if [[ $rhs =~ ^${markupIndicator}L([^$markupIndicator]+)L${markupIndicator}(.*) ]]; then
+            if [[ $rhs =~ ^${tokenDelimiter}L([^$tokenDelimiter]+)L${tokenDelimiter}(.*) ]]; then
                 sql+=${BASH_REMATCH[1]}    # append the quoted literal
                 rhs=${BASH_REMATCH[2]}
                 continue

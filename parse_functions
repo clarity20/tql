@@ -173,13 +173,9 @@ function parseWhereArgument()
         fi
 
         # Mark boolean logic operators.
-        if [[ "$rhs" =~ ^($g_ANDop)(.*) ]]; then
+        if [[ "$rhs" =~ ^($g_ANDop|$g_ORop)(.*) ]]; then
             rhs=${BASH_REMATCH[2]}
-            streamToken B'&'; output+=$g_returnString   # B& = boolean AND      # TODO Caller expects "AND" not "B&"
-            continue
-        elif [[ "$rhs" =~ ^($g_ORop)(.*) ]]; then
-            rhs=${BASH_REMATCH[2]}
-            streamToken B'|'; output+=$g_returnString   # B| = boolean OR       # TODO Caller expects "OR" not "B|" 
+            streamToken B"${BASH_REMATCH[1]:0:1}"; output+=$g_returnString     # B& = boolean AND      B| = boolean OR
             continue
         fi
 
@@ -824,7 +820,7 @@ function tagIfEndNCV()
     if ((insideNCV)); then
 
         # Grab the current NCV expression from the result-in-progress
-        [[ $output =~ ${markupIndicator}NCV${NCVCount}(.*) ]]
+        [[ $output =~ ${tokenDelimiter}NCV${NCVCount}(.*) ]]
 
         # Determine its type
         NCVContent=${BASH_REMATCH[1]}
