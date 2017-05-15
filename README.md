@@ -40,12 +40,12 @@ users, this typically means the "mysql" binary bundled with MySQL.
 2. a small wrapper script or shell function for the binary that either knows
 or figures out the database connection parameters (user name, password, host,
 and database name) so that TQL doesn't have to.
-3. an environment variable, `TQL_DB_WRAPPER` that identifies your wrapper
-script.
+3. two environment variables: `TQL_DB_WRAPPER` to identify your wrapper
+script and another, `DBNAME` to identify your database.
 
 *Example*: Your wrapper script might look like the following:
 
-    exec /bin/mysql --user=BOB --password=BOBPASS --host=127.0.0.1 bobsDB "$@"
+    exec /bin/mysql --user=BOB --password=BOBPASS --host=127.0.0.1 "$DBNAME" "$@"
 
 Corresponding to this script, you would add the following to your shell configs:
 
