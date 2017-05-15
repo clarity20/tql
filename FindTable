@@ -34,7 +34,7 @@ fi
 if [[ $WHERE_CLAUSE =~ [[:alpha:]] ]]; then
     WHERE_CLAUSE+=" AND "
 fi
-WHERE_CLAUSE+="table_schema='$DBNAME'"
+WHERE_CLAUSE+="table_schema='$TQL_DBNAME'"
 
 isOptionOn "debug|d" $OPTIONS
 if (($?)); then

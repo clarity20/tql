@@ -9,7 +9,7 @@ validate_single_column "$@"
 STANDARD_COLS="DISTINCT table_name,column_name"
 # Other useful cols: column_type, column_key, ordinal_precision, column_default, data_type
 TABLES="information_schema.columns"
-WHERE_PRECLAUSE="table_schema='$DBNAME' and table_name not like '%view%'"
+WHERE_PRECLAUSE="table_schema='$TQL_DBNAME' and table_name not like '%view%'"
 
 # Column name inference rules
 g_defaultAlnums=column_name

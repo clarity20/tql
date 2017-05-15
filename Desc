@@ -14,7 +14,7 @@ fi
 # Initialize the query parts.
 STANDARD_COLS="table_name,column_name,column_type"
 TABLES="information_schema.columns c"
-WHERE_PRECLAUSE="table_schema='$DBNAME'"
+WHERE_PRECLAUSE="table_schema='$TQL_DBNAME'"
 
 # Column name inference rules
 g_defaultAlnums=table_name

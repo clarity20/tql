@@ -12,7 +12,7 @@ fi
 
 STANDARD_COLS="t.table_name as table_name,column_name,auto_increment"
 TABLES="information_schema.tables t,information_schema.columns c"      # A table join is needed because auto_increment is from t and column_name is from c
-WHERE_PRECLAUSE="t.table_name=c.table_name AND t.table_schema=c.table_schema AND t.table_schema='"$DBNAME"'"  # DBNAME uniqifies the result set if there are multiple DBs
+WHERE_PRECLAUSE="t.table_name=c.table_name AND t.table_schema=c.table_schema AND t.table_schema='"$TQL_DBNAME"'"  # TQL_DBNAME uniqifies the result set if there are multiple DBs
 
 g_defaultAlnums=t.table_name
 

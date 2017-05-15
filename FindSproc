@@ -8,7 +8,7 @@ validate_single_column "$@"
 
 STANDARD_COLS="routine_name,last_altered"     # others: created, routine_def'n (too long), comment, definer...
 TABLES="information_schema.routines"
-WHERE_PRECLAUSE="routine_type='procedure' and routine_schema='$DBNAME'"
+WHERE_PRECLAUSE="routine_type='procedure' and routine_schema='$TQL_DBNAME'"
 
 g_defaultAlnums=routine_name
 
