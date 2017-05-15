@@ -3,3 +3,8 @@
 declare -r TRUE=1
 declare -r FALSE=0
 
+declare -A tokenTypes
+tokenTypes=(
+    [COMPARATOR]='C'
+)
+

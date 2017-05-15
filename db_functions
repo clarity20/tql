@@ -1296,7 +1296,7 @@ function parseOutSelects()
 #
 # Builds the core WHERE-clause from the supplied arguments. These can be in basic or compound form.
 #
-# The basic-form arguments are so-called "NCV ((name-)comparator-)value" expressions. If the name is
+# We call the basic-form arguments "NCV (name-comparator-value)" expressions. If the name is
 # omitted it will be inferred based on the global settings g_default{Num,Alnum}Cols. If the comparator
 # is also omitted it will default to "=". Examples of NCV expressions include:
 #
@@ -1304,7 +1304,7 @@ function parseOutSelects()
 #    n omitted:                    <=y   =x,y,z
 #    n,c omitted:                  x   x,y,z   x-y
 #
-# Compound-form arguments are boolean-logical combinations of the above.
+# and compound-form arguments are boolean combinations of these.
 ##########################################################################################
 function generateWhereClause()
 {
@@ -1329,11 +1329,10 @@ function generateWhereClause()
     local _wheres_bIsList _wheres_bIncludesNull _wheres_bIsRange _wheres_bIsNameGiven
     local name code comparator value
 
-    # In this subroutine we expect value-type arguments only; options and selection-type arguments should already have been filtered out.
-    # Our arguments can be either name-comparator-value, comparator-value or just a value. If an argument lacks an explicit comparator,
-    # a default of "=" is assumed. If it lacks a column name, the name(s) is (are) taken from one of the globals g_default{Num,Alnum}Cols;
-    # a best-guess is made based on the value provided. Ultimately we aim to produce a correct WHERE clause as a sequence of fragments
-    # joined together by either ANDs or ORs as specified by the user.
+    # This function receives a sequence of raw NCV expressions and produces a correct WHERE clause,
+    # namely a sequence of processed NCV fragments joined together by the right boolean conjunctions.
+    # Our plan of attack is to separate the NCVs, call a couple processing functions on each one,
+    # and determine the conjunctions. 
 
     # Set the highest-level conjunction, defaulting to AND.
     isOptionOn 'o|or' $OPTIONS
@@ -1359,19 +1358,18 @@ function generateWhereClause()
     # Handle each argument in turn
     while [[ -n $1 ]]; do
 
-        # Lexically analyze the argument, encoding the analysis with suitable markup
+        # Lexically analyze the argument, decorating the result with suitable markup
         parseWhereArgument "$1"; parsedStr=$g_returnString
 
-        # Walk the lexed string forward, interpreting the markup as we go. We use it to set up the skeletal framework of the SQL
-        # and we expand() every [[name-]cmp-]value construct to flesh out the SQL framework into a complete subclause
-
+        # Prepare to walk the lexed argument forward
         local rhs=$parsedStr
         local sql=" $g_mainConjunction ("   # this outermost '(' ensures the "main" conjunctions have least precedence
 
-        # Convert the parsed argument into SQL token by token
+        # Break up the parsed argument into separate NCVs. For each one, invoke the low-level processors to generate 
+        # the correct SQL and link them together with the right boolean conjunctions
         while [[ -n $rhs ]]; do
 
-            # Pull the next token from the parsed string
+            # Pull the next NCV or boolean or parenthetical token from the parsed string
 
             # TODO Will everything besides spaces necessarily be tokenized? We assume so for now...
             # Handle uncontained spaces
@@ -1385,33 +1383,18 @@ function generateWhereClause()
             if [[ $rhs =~ ^${tokenDelimiter}NCV([0-9]+) ]]; then
                 ncvCounter=${BASH_REMATCH[1]}
 
-                [[ $rhs =~ ^${BASH_REMATCH[0]}$tokenDelimiter(.*)$tokenDelimiter/([NC]*V)$ncvCounter(${tokenDelimiter}.*)?$ ]]
+                [[ $rhs =~ ^${BASH_REMATCH[0]}(${tokenDelimiter}.*)$tokenDelimiter/([NC]*V)$ncvCounter(${tokenDelimiter}.*)?$ ]]
                 ncv=${BASH_REMATCH[1]}
                 ncvType=${BASH_REMATCH[2]}
                 rhs=${BASH_REMATCH[3]}
 
-                # "Clean up" the NCV. Open up with "(" or "NOT (" as appropriate.
+                # "Clean up" the NCV. Open with "(" or "NOT (" as appropriate.
                 normalizeNCVConstruct $ncvType "$ncv"; _wheres_bIsNameGiven=$?
 
-                # We build the SQL fragment for the current NCV construct. This means deciding when to quote a value, and constructing
-                # a grammatically correct piece of SQL based on whether the value is a singleton, list, interval, NULL, regex, regex list,
-                # or a negation of one of these. In addition, we massage the values where necessary because the db client can be picky about
-                # certain formatting issues, e.g. floats cannot lead with a decimal point and timestamps must be laid out rather carefully.
-
-                # Invoke the main SQL generation code ...
-                # Regex lists or singletons --> "AND/OR (name LIKE 'value1' OR name LIKE 'value2')"
-                # Literal lists             --> "AND/OR name IN (value1, value2, value3)"
-                # Literal singletons        --> "AND/OR name comparator value"
-
-        #### TODO Try some error checking on the values, based on stuff like: code 0f --> float  /   code 0i --> integer
-        #### TODO But not necessarily right here.
-
-                # Does this name-cmp-value argument have an explicit name?
+                # Build the SQL fragment for the current NCV. Choose a builder based on
+                # whether the NCV contains an explicit name.
                 if ((_wheres_bIsNameGiven)); then
                     processNamedNCVArgument
-
-                # If not, the argument is a value (possibly preceded by comparator) without a name.
-                # Make the correct inferences about the implied column name(s) and comparator and construct the SQL.
                 else
                     processUnnamedNCVArgument
                 fi
@@ -1420,14 +1403,14 @@ function generateWhereClause()
                 continue
 
             # Left parentheses
-            elif [[ $rhs =~ ^$tokenDelimiter$g_leftParen([0-9]+)$tokenDelimiter(.*) ]]; then
+            elif [[ $rhs =~ ^$tokenDelimiter$g_leftParen([0-9]+)(${tokenDelimiter}.*)?$ ]]; then
                 sql+="("
                 nestingLevel=${BASH_REMATCH[1]}      # not used yet, but maybe some day
                 rhs=${BASH_REMATCH[2]}
                 continue
 
             # Right parentheses
-            elif [[ $rhs =~ ^$tokenDelimiter$g_rightParen([0-9]+)$tokenDelimiter(.*) ]]; then
+            elif [[ $rhs =~ ^$tokenDelimiter$g_rightParen([0-9]+)(${tokenDelimiter}.*)?$ ]]; then
                 sql+=")"
                 nestingLevel=${BASH_REMATCH[1]}
                 rhs=${BASH_REMATCH[2]}
@@ -1435,11 +1418,11 @@ function generateWhereClause()
             fi
 
             # Logical operators
-            if [[ $rhs =~ ^${tokenDelimiter}B'&'$tokenDelimiter(.*) ]]; then
+            if [[ $rhs =~ ^${tokenDelimiter}B'&'(${tokenDelimiter}.*) ]]; then
                 sql+=" AND"
                 rhs=${BASH_REMATCH[1]}
                 continue
-            elif [[ $rhs =~ ^${tokenDelimiter}B'|'$tokenDelimiter(.*) ]]; then
+            elif [[ $rhs =~ ^${tokenDelimiter}B'|'(${tokenDelimiter}.*) ]]; then
                 sql+=" OR"
                 rhs=${BASH_REMATCH[1]}
                 continue
@@ -1496,15 +1479,25 @@ function normalizeNCVConstruct()
     ((_wheres_bIncludesNull = FALSE))
     ((_wheres_bIsRange = FALSE))
 
+#TODO Starting in this function, we need to accommodate the new delimited, marked-up input format.
+#TODO That means that the markup must not be removed or disturbed as this function does its cleaning up.
+
     # Break down the NCV into name, comparator (defaulting to "=") and value. Only the value is guaranteed to be present.
-    [[ $2 =~ ^([^=\<\!\>]*)([=\<\!\>]*)(.*) ]]
-    if [[ -z ${BASH_REMATCH[2]} ]]; then
-        comparator='='
-        value=${BASH_REMATCH[1]}
-    else
+#TODO In the future, sthg like RHS/LHS would be better names than name & value because of their broader generality.
+#TODO Just avoid shadowing the "rhs" we use in the caller.
+    if [[ $2 =~ (.*)${tokenDelimiter}${tokenTypes[COMPARATOR]}([=\<\!\>]+)(.*) ]]; then
         name=${BASH_REMATCH[1]}
         comparator=${BASH_REMATCH[2]}
         value=${BASH_REMATCH[3]}
+            #TODO For now, chop away all markup and delimiters right here so the code below will run as-is
+            #TODO on simple NCV inputs. This is of course a stopgap measure that won't work with complex inputs.
+            nameType=${name:1:1}    name=${name:2}    # throw out the delimiter, the ${name:0:1} position
+            valueType=${value:1:1}  value=${value:2}
+    else
+        comparator='='
+        value=${BASH_REMATCH[1]}
+            # TODO as just above
+            valueType=${value:1:1}  value=${value:2}
     fi
     isNameGiven=${#name}
 
@@ -1518,6 +1511,10 @@ function normalizeNCVConstruct()
     fi
 
     # Expand any abbreviated names
+#TODO Expansion is very sensitive to the new lexed string stuff. Not only the names but also certain values 
+#TODO as well as function names will need to be expanded. This is where we will have to break down name and value
+#TODO and go token-by-token. So we'll prolly pass n, c and v to expand() which will then do the legwork. Instead
+#TODO of getting back a single name and code we'll get back all expanded names & codes for both the LHS and the RHS.
     if ((isNameGiven)); then
         expandColumnNames "$TABLE_NAMES" "$name"
         name=${g_returnString%$delim*}      # this is the post-processed (expanded) name
@@ -1578,7 +1575,7 @@ function normalizeNCVConstruct()
 ########################################################################################################
 # processNamedNCVArgument
 # A major subroutine of generateWhereClause() that builds a SQL snippet for a name-comparator-value construct
-# having an explicitly given "name" component
+# whose "name" component is explicitly provided
 ########################################################################################################
 function processNamedNCVArgument()
 {
