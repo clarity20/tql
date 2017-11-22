@@ -820,19 +820,19 @@ function tagIfEndNCV()
     if ((insideNCV)); then
 
         # Grab the current NCV expression from the result-in-progress
-        [[ $output =~ ${tokenDelimiter}NCV${NCVCount}(.*) ]]
+        [[ $output =~ ${tokenDelimiter}NCV${NCVCount}${tokenDelimiter}(.*) ]]
 
         # Determine its type
         NCVContent=${BASH_REMATCH[1]}
-        if [[ $NCVContent =~ ^([^=\<\!\>]*) ]]; then
-            if [[ -n ${BASH_REMATCH[1]} ]]; then
-                NCVType=NCV
-            else
-                NCVType=CV
-            fi
+        [[ $NCVContent =~ ^([^=\<\!\>]*) ]]   # Look for non-comparator chars at the beginning
+        if [[ -z ${BASH_REMATCH[1]} ]]; then
+            NCVType=CV
+        elif [[ $NCVContent =~ [=\<\!\>]+ ]]; then   # Look for comparator chars anywhere
+            NCVType=NCV
         else
             NCVType=V
         fi
+
         # Encode 
         streamToken '/'$NCVType$NCVCount; output+=$g_returnString
 
