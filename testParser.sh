@@ -19,7 +19,7 @@ tokenDelimiter=$'\n'
 function showComparison()
 {
     declare -a expectedArr actualArr 
-    local maxLength=0 i=0
+    local maxLength=0 i=0 isFailed=$FALSE
 
     OLDFS=$IFS
     IFS="$tokenDelimiter" expectedArr=($1)
@@ -45,8 +45,12 @@ function showComparison()
         else
             if [[ "${expectedArr[i]}" == "${actualArr[i]}" ]]; then
                 comparison='  '
+            # Allow some slackness when comparing the NCV terminators
+            elif [[ ("${expectedArr[i]}" =~ ^/NCV) && ("${actualArr[i]}" =~ ^/(N?C)?V) ]]; then
+                comparison='  '
             else
                 comparison='<>'
+                isFailed=$TRUE
             fi
             printf "%-*s %2.2s %s\n" $maxLength "${expectedArr[i]}" "$comparison" "${actualArr[i]}"
         fi
@@ -56,7 +60,7 @@ function showComparison()
     unset actualArr expectedArr
     echo
 
-    if [[ $actualResult == $expectedResult ]]; then
+    if ((isFailed == FALSE)); then
         echo passed.
     else
         echo "*** FAILED ***"
@@ -69,8 +73,8 @@ function showComparison()
 ###################################################################
 # testSubclause  <inputString>  <expected sequence> [...]
 #
-# Verifies that a sequence of tokens (comprising any number of NCVs)
-# is parsed into the expected sequenced of tokens. See testSingle()
+# Verifies that an input string (comprising any number of NCVs)
+# is parsed into the expected sequence of tokens. See testSingle()
 # for a simplified version that applies to single-NCV inputs
 ###################################################################
 function testSubclause()
@@ -80,7 +84,7 @@ function testSubclause()
     shift
 
     # Construct the string against which to compare our results
-    # The caller must use square brackets to represent NCV delimiters
+    # The caller must use curly braces to represent NCV delimiters
     local expectedResult=""
     while [[ -n $1 ]]; do
         typeIndicator=""
@@ -107,7 +111,7 @@ function testSubclause()
                  token=NCV$NCVcount
                  shift
                  ;;
-            '}') token='/'NCV$NCVcount
+            '}') token='/'NCV$NCVcount    # Do not try to figure out NCV/CV/V
                  shift
                  ;;
               *) typeIndicator=$1
@@ -143,6 +147,7 @@ function testSingle()
     shift
     
     # Construct the string against which to compare our results
+    # Curly braces are not used because we assume there is just one NCV
     expectedResult=""
     while [[ -n $1 ]]; do
         token=""
@@ -171,7 +176,7 @@ function testSingle()
     # Exercise the code being tested
     parseWhereArgument "$inputStr"
 
-    [[ $g_returnString =~ ^${tokenDelimiter}"NCV1"(.*)$tokenDelimiter/NCV1 ]]
+    [[ $g_returnString =~ ^${tokenDelimiter}"NCV1"(.*)$tokenDelimiter/(N?C)?V1 ]]
     actualResult=${BASH_REMATCH[1]}
 
     # Compare against the expected result
@@ -254,12 +259,6 @@ testSubclause "$arg" { W this } S B '&' S { W that }
 arg="First Street East || 123 Second Ave"   # Two kinds of compound values
 testSubclause "$arg" { V "First Street East" } S B '|' S { V "123 Second Ave" }
 
-# Grouping parentheses
-arg="(12&&3)||((4&&999)||200)"
-testSubclause "$arg" [ { N 12 } B '&' { N 3 } ] B '|' [ [ { N 4 } B '&' { N 999 } ] B '|' { N 200 } ]
-
-# TODO: Detect unbalanced parens.
-
 ##############
 ##############
 ##############
@@ -268,8 +267,16 @@ fi  # if ((0/1)) guard
 ##############
 ##############
 
+# Grouping parentheses
+arg="(12&&3)||((4&&999)||200)"
+testSubclause "$arg" "(" { N 12 } B '&' { N 3 } ")" B '|' "(" "(" { N 4 } B '&' { N 999 } ")" B '|' { N 200 } ")"
+
+exit 10
+
+# TODO: Detect unbalanced parens.
+
 # Function calls. 0/1/multiple parameters. Singular, chained, nested.
-arg="func()";  testSingle $arg "("
+arg="func()";  testSingle $arg F func "(" ")"
 #arg="func(val)"
 #arg="func(val,123,99)"
 #arg="func(88)-func(baz)"
