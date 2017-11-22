@@ -116,6 +116,12 @@ function parseCompletely()
         eval set "-- "${g_returnString#$OPTIONS$delim}
     fi
 
+    # Load the expression parser
+    if [[ $g_haveParser == $FALSE ]]; then
+        g_haveParser=$TRUE
+        source $TQL_HOME/parse_functions
+    fi
+
     # If the UPDATE option is active, prepare the SET clause
 #TODO Instead of bIsUpdate we should use an "enumeration" / function getQueryType to indicate the query type.
 #TODO A 0/1 indicator is not adequate when we introduce DELETE or INSERT queries.
@@ -1308,17 +1314,19 @@ function parseOutSelects()
 ##########################################################################################
 function generateWhereClause()
 {
-    # Return data
+    # Declare return data
     local WHERE_CLAUSE=$placeholderForEmpty
     local valuesToSortBy columnToSortBy
 
-    # Helper variables
+    # Declare helper variables
     declare -i numWheres=0 numDftNumCols=0 numDftAlnumCols=0
     declare -a whereComponent
+    local _wheres_bIsList _wheres_bIncludesNull _wheres_bIsRange _wheres_bIsNameGiven
+    local name code comparator value
     local valueType sql
 
     # Array-ify the column name inference rules
-    declare -a defaultNumCols defaultAlnumCols dftNumCodes dftAlnumCodes columnNames columnCodes      # can't declare and assign arrays on the same line
+    declare -a defaultNumCols defaultAlnumCols dftNumCodes dftAlnumCodes columnNames columnCodes
     OLDFS="$IFS"; IFS=$','
     defaultNumCols=($g_defaultNums)
     dftNumCodes=($g_defaultNumCodes)
@@ -1326,13 +1334,10 @@ function generateWhereClause()
     dftAlnumCodes=($g_defaultAlnumCodes)
     IFS="$OLDFS"
 
-    local _wheres_bIsList _wheres_bIncludesNull _wheres_bIsRange _wheres_bIsNameGiven
-    local name code comparator value
-
-    # This function receives a sequence of raw NCV expressions and produces a correct WHERE clause,
-    # namely a sequence of processed NCV fragments joined together by the right boolean conjunctions.
-    # Our plan of attack is to separate the NCVs, call a couple processing functions on each one,
-    # and determine the conjunctions. 
+    # This function receives a sequence of raw NCV expressions and produces the corresponding WHERE clause,
+    # which is a sequence of processed NCV expressions joined together by the correct boolean conjunctions.
+    # Our plan of attack is to separate the raw NCVs, call a couple of processing functions on each one
+    # to generate the processed NCVs, and then to determine and provide the correct conjunctions. 
 
     # Set the highest-level conjunction, defaulting to AND.
     isOptionOn 'o|or' $OPTIONS
@@ -1343,12 +1348,6 @@ function generateWhereClause()
         if (($?)); then
             g_mainConjunction=AND
         fi
-    fi
-
-    # Load the parser function, just once
-    if [[ $g_haveParser == $FALSE ]]; then
-        g_haveParser=$TRUE
-        source $TQL_HOME/parse_functions  ## TODO Dangerous variable scoping issues here!!! This should be moved to the caller.
     fi
 
 #TODO Since we will expand() the n-c-v particles below, we need to remove the expand() invocation way up above and the
