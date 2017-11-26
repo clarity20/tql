@@ -39,7 +39,7 @@ function parseWhereArgument()
     fi
 
     local rhs=$1
-    declare -i nestingLevel=0 funcNestingLevel=0
+    declare -i globalNestingLevel=0 funcNestingLevel=0  ncvNestingLevel=0
     declare -i NCVCount=0 insideNCV=0
     local output=""
     local letter="" previousLetter
@@ -52,30 +52,34 @@ function parseWhereArgument()
     # and create a stream of token descriptors, tokens and some syntax annotations.
     # There are a few cases where we retroactively edit the stream as we discover new information from the input.
     ################################################################################
-    
+
     while [[ -n $rhs ]]; do
         previousLetter=$letter
         letter=${rhs:0:1}
 
         # Identify left and right parentheses. Track their nesting levels and their types (grouping or functional).
         if [[ $letter =~ $g_leftParen ]]; then
-            ((nestingLevel++))
+            ((globalNestingLevel++))
 
-            # If the preceding token is marked as a word, it's really a function name and the parenthesis is a function parenthesis.
-            # We will modify the token (inside the pending buffer, where it currently resides) and stream it with the function paren.
+            # If the pending token was marked as a word, it's really a function name and the current parenthesis
+            # is a function parenthesis. We modify the token accordingly (in the pending buffer, where it currently
+            # resides) and stream it with the function paren.
             if [[ $g_compoundTokenType == W ]]; then
                 ((funcNestingLevel++))
 
                 # Mark the pending token as a function name
-                g_compoundTokenType=F
-                g_compoundTokenBuffer=${g_compoundTokenBuffer/#W/F}
+                local newTokenType=F
+                g_compoundTokenBuffer=${g_compoundTokenBuffer/$g_compoundTokenType/$newTokenType}
+                g_compoundTokenType=$newTokenType
 
-                # Markup the '(' as a function parenthesis
-                streamToken '['$nestingLevel; output+=$g_returnString
+                # Stream the token with the function parenthesis indicator
+                streamToken '['$globalNestingLevel; output+=$g_returnString
 
             else
-                # If the preceding token is not a word, mark the '(' as a grouping parenthesis
-                streamToken '('$nestingLevel; output+=$g_returnString
+                # If the pending token is not a word, stream it with the grouping parenthesis indicator
+                tagIfBeginNCV; insideNCV=$?
+                streamToken '('$globalNestingLevel; output+=$g_returnString
+                ((ncvNestingLevel++))
             fi
 
             [[ $rhs =~ ^"$letter"(.*) ]]
@@ -85,7 +89,8 @@ function parseWhereArgument()
         elif [[ $letter =~ $g_rightParen ]]; then
             # Assign this ')' the same paren type as its matching '(', which is the nearest one to the left with the same nesting level.
             local parenIndicator="[("
-            [[ $output =~ .*$tokenDelimiter([$parenIndicator])$nestingLevel(.*) ]]
+            [[ $output =~ .*$tokenDelimiter([$parenIndicator])$globalNestingLevel(.*) ]]
+            # Function-type parentheses
             if [[ ${BASH_REMATCH[1]} == '[' ]]; then
                 local tokenToLookFor tokenOccurrences=0 functionArity
                 local tokenMarker="@"
@@ -93,7 +98,7 @@ function parseWhereArgument()
 
                 # Determine the arity of the function call by counting the comma tokens at the current (paren) nesting level:
                 # (1) Construct the comma token we will search for
-                streamToken ","$nestingLevel; tokenToLookFor=$g_returnString
+                streamToken ","$globalNestingLevel; tokenToLookFor=$g_returnString
                 # (2) Count off the commas left-to-right
                 while [[ $functionCall =~ ("$tokenToLookFor")(.*) ]]; do
                     ((tokenOccurrences++))
@@ -107,13 +112,15 @@ function parseWhereArgument()
                 fi
 
                 # Close the function arg list
-                streamToken ']'$nestingLevel'A'$functionArity; output+=$g_returnString
+                streamToken ']'$globalNestingLevel'A'$functionArity; output+=$g_returnString
                 ((funcNestingLevel--))
+            # Grouping parentheses
             else
-                streamToken ')'$nestingLevel; output+=$g_returnString
+                streamToken ')'$globalNestingLevel; output+=$g_returnString
+                ((ncvNestingLevel--))
             fi
 
-            ((nestingLevel--))
+            ((globalNestingLevel--))
             [[ $rhs =~ ^"$letter"(.*) ]]
             rhs=${BASH_REMATCH[1]}
             continue
@@ -134,7 +141,7 @@ function parseWhereArgument()
             # for a corner case that would require a special back-fix to the token stream.
             tagIfBeginNCV; insideNCV=$?
             streamToken C$comp; output+=$g_returnString
-            
+
             # Now for the corner case. The comparator tells us that certain "%" characters we had assumed were SQL wildcards
             # were actually modulus operators (based on the distinction between r-values and l-values). We will fix
             # the token stream by splitting the surrounding token into two word/value tokens and an intervening "%" operator.
@@ -176,29 +183,18 @@ function parseWhereArgument()
         if [[ "$rhs" =~ ^($g_ANDop|$g_ORop)(.*) ]]; then
             rhs=${BASH_REMATCH[2]}
             streamToken B"${BASH_REMATCH[1]:0:1}"; output+=$g_returnString     # B& = boolean AND      B| = boolean OR
+            ((ncvNestingLevel=0))
             continue
         fi
 
         # TODO Mark isolated (non-list) NULLs. Distinguish them from minus-sign operators...
 
-        # Inside function calls 
-        if [[ $funcNestingLevel -gt 0 ]]; then
-
-            # Mark commas as argument separators, because comma-lists should not appear as function parameters
-            if [[ $letter == , ]]; then
-                streamToken $letter$nestingLevel; output+=$g_returnString
-                [[ $rhs =~ ^"$letter"(.*) ]]
-                rhs=${BASH_REMATCH[1]}
-                continue
-
-            # All other chars are fcn args. Treat like "generic" chars for now.
-#TODO Look for words that can be expanded. We will not look for lists or regex expressions; we don't think they can be inside function calls.
-            else
-                output+=$letter
-                [[ $rhs =~ ^"$letter"(.*) ]]
-                rhs=${BASH_REMATCH[1]}
-                continue
-            fi
+        # Mark commas as argument separators when inside function calls.
+        if [[ $letter == , && $funcNestingLevel -gt 0 ]]; then
+            streamToken $letter$globalNestingLevel; output+=$g_returnString
+            [[ $rhs =~ ^"$letter"(.*) ]]
+            rhs=${BASH_REMATCH[1]}
+            continue
         fi
 
         #######################################################################################################################
@@ -208,38 +204,55 @@ function parseWhereArgument()
         #
         #######################################################################################################################
         #
-        # First we process tokens that are, or might be, expandable words (aka abbreviations).
+        # First we process tokens that are, or might be, expandable words (aka abbreviated column/table/function names).
         # These tokens begin with [[:lower:]] or perhaps "*" and are simple alphanumerics, i.e. they are not lists or regexes.
         #
         #######################################################################################################################
 
-        # Identify and extract words that might be expandable. We cast a wide net, snagging all simple values that don't begin with a capital
-        # because at this stage we can't know which are truly expandable words.
-        if [[ $rhs =~ ^([\*[:lower:]][[:alnum:]]*)(.*) ]]; then        # Token must start in a wordlike way, with star or lowercase
+        # Identify and extract words that might be expandable. We begin by casting a wide net, snagging all simple values
+        # that don't begin with a capital because at this stage we can't know which are truly expandable words.
+        if [[ $rhs =~ ^([\*[:lower:]][[:alnum:]]*)(.*) ]]; then        # Words must start in a wordlike way, with star or lowercase
             rawToken=${BASH_REMATCH[1]}
             local tmpRhs=${BASH_REMATCH[2]}
             local nextChar=${tmpRhs:0:1}
 
-            # Make sure the following character (if there is one) is a word terminator, to filter out non-word tokens that begin like words.
-            # Here we assume that a trailing % means regex, not modulus. There is other code in this function to detect that situation and fix it.
-            if [[ ! $nextChar =~ ^[,_%\"\'] ]]; then
-                rhs=$tmpRhs
+            # Non-words that begin like words will squeeze through the above filter. To recognize them, we look at the following
+            # character (if there is one). If the supposed word is a true word, then that character is illegal within a word and
+            # so it must begin a new token (which cannot be a word). Otherwise, the "word" is not really a word and this character
+            # is the continuation of a non-word. Here we check for characters that indicate the latter case obtains. For instance,
+            # a quote mark that follows a "word" tells us it was not really a word but the start of a literal value that has yet
+            # to terminate. (We include the % sign among these characters on the assumption that it appears as the SQL globbing
+            # operator. We have code elsewhere that corrects this assumption if it turns out to be the modulus operator instead.)
+            nonwordExtenders=[_%${eitherQuote}]
+
+            if ((funcNestingLevel==0)); then
+                # Outside function calls, we interpret commas as delimiters appearing within lists, which are non-word values.
+                # These commas serve as extenders of non-word tokens.
+                # Inside function calls, the commas always serve as argument delimiters, since we will not encounter lists there.
+                # In that context, there are no tokens that can cross comma-delimited boundaries, so commas never act as extenders.
+                nonwordExtenders+=,
+            fi
+
+            # If the next character is not a "nonword extender", i.e. it serves to terminate an actual word,
+            # then process the word as a true word
+            if [[ ! $nextChar =~ $nonwordExtenders ]]; then
                 tagIfBeginNCV; insideNCV=$?
 
                 # If the word begins with a "*", it is a true word only when the "*" is preceded by another operator
                 # or by certain other special characters. Otherwise it is the "times" operator. If it turns out to be
-                # the latter, we dump the "*" to the output so we can treat the following characters as the word.
+                # the latter, we dump the "*" to the output and continue the main token processing loop
                 if [[ ($letter == '*') && -n "$previousLetter" && (! "+-*/ (&|" =~ "$previousLetter") ]]; then
-                    output+=$letter
-                    [[ $rawToken =~ ^"$letter"(.*) ]]
-                    rawToken=${BASH_REMATCH[1]}
+                    streamToken O$letter; output+=$g_returnString
+                    rhs=${rhs/#"$letter"}
+                    continue
                 fi
-    
-                # Mark this as a (possible sequence of) expandables. This enables us to process word sequences
+
+                # Mark this as a (possible sequence of) expandable words. This enables us to process word sequences
                 # such as "DISTINCT foobar" and "INTERVAL n DAY".
                 bufferToken "$rawToken" "W"
 
                 # Proceed to the next token
+                rhs=$tmpRhs
                 continue
             fi
         fi
@@ -258,7 +271,7 @@ function parseWhereArgument()
         #
         #####################################
 
-        # (1) If there's a list-initial NULL indicator, flag it and and strip it from the input stream
+        # (1) If there is a list-initial NULL indicator, flag it and and strip it from the input stream
         if [[ $rhs =~ ^-, ]]; then
             rawToken="-,"
             rhs=${rhs:2}
@@ -268,7 +281,7 @@ function parseWhereArgument()
         fi
 
         # (2) Stream quoted literals.
-        if [[ $letter =~ [\"\'] ]]; then
+        if [[ $letter =~ [${eitherQuote}] ]]; then
             tagIfBeginNCV; insideNCV=$?
             retrieveFullToken
             bufferToken "$rawToken" "V"
@@ -276,24 +289,25 @@ function parseWhereArgument()
         fi
 
         # (3) Stream "normal" alpha-like string tokens.
-        if [[ $rhs =~ ^([[:alpha:]_%][[:alnum:]_%,]*)(.*) ]] ;then      # Grab the first part of the token w.r.t. quotes and NULL markers
+        # Grab the first part of the token with respect to quotes and NULL markers
+        if [[ $rhs =~ ^([[:alpha:]_%][[:alnum:]_%,]*)(.*) ]]; then
             tagIfBeginNCV; insideNCV=$?
 
-            rawToken+=${BASH_REMATCH[1]}     # Use plus-equals to keep the "-," (NULL) prefix if it's there 
+            rawToken+=${BASH_REMATCH[1]}     # Use plus-equals to keep the "-," (NULL) prefix if it's there
             rhs=${BASH_REMATCH[2]}
 
 #TODO Test single-char tokens, esp. "%" which can be the modulus operator or a single-character SQL regex. We'll assume the latter case holds
 #TODO if and only if either the NCV or its RHS consists solely of "%".
 
-            # Probe forward across all quoted pieces and embedded NULLs to make sure we have the complete token 
-            if [[ ($rhs =~ ^[\"\']) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
+            # Probe forward across all quoted pieces and embedded NULLs to make sure we have the complete token
+            if [[ ($rhs =~ ^[$eitherQuote]) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
                 letter=${rhs:0:1}
 
                 # One or more additional sub-pieces. Grab the whole token.
                 retrieveFullToken
             fi
 
-            # If the proposed token consists of one "%" surrounded by the right kind of text, it could be parsed as either a regex OR a modulus: 
+            # If the proposed token consists of one "%" surrounded by the right kind of text, it could be parsed as either a regex OR a modulus:
             # e.g. 'foo%5' versus foo%5. We can tell the difference once we know whether the "token" is on the right or left hand side
             # of the current NCV. For now, we will treat it as a regex and set an indicator, so that we can re-visit and fix if necessary.
             if [[ $rawToken =~ % ]]; then
@@ -314,8 +328,11 @@ function parseWhereArgument()
             continue
         fi
 
-        # (4) Stream digit-initial alnums that are not numbers per se.
-        if [[ $rhs =~ ^([0-9][[:alnum:]%_,]+)(.*) ]]; then    # Get the first part consisting of alnums, commas, and regexes only.
+        # (4) Stream digit-initial alnums that are not numbers per se. When inside a function call,
+        # we must tokenize differently because commas play a different role. We handle that elsewhere.
+
+        # Get the first part consisting of alnums, commas, and regexes only.
+        if [[ ($funcNestingLevel -eq 0) && $rhs =~ ^([0-9][$subsequentCharacters]+)(.*) ]]; then
             local tmpToken=${BASH_REMATCH[1]}
             local tmpRhs=${BASH_REMATCH[2]}
 
@@ -327,13 +344,13 @@ function parseWhereArgument()
                 tagIfBeginNCV; insideNCV=$?
 
                 # Probe forward across all quoted or NULL parts to get the complete token
-                if [[ ($rhs =~ ^[\"\']) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
+                if [[ ($rhs =~ ^[$eitherQuote]) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
                     letter=${rhs:0:1}
 
                     retrieveFullToken
                 fi
 
-                # If the proposed token consists of one "%" surrounded by the right kind of text, it could be parsed as either a regex OR a modulus: 
+                # If the proposed token consists of one "%" surrounded by the right kind of text, it could be parsed as either a regex OR a modulus:
                 # e.g. 'foo%5' versus foo%5. We can tell the difference once we know whether the "token" is on the right or left hand side
                 # of the current NCV. For now, we will treat it as a regex and set an indicator, so that we can re-visit and fix if necessary.
                 if [[ $rawToken =~ % ]]; then
@@ -368,11 +385,15 @@ function parseWhereArgument()
             local following ending
 
             case $nextChar in
-              ,) # int or float list
-                [[ $rhs =~ ^$nextChar([-0-9,.]+)(.*) ]]    # NOTE: We could specify more precisely where negative signs may legally be placed
-                value+=$nextChar${BASH_REMATCH[1]}
-                rhs=${BASH_REMATCH[2]}
-                streamToken V$value; output+=$g_returnString
+              ,) # function argument or numeric list
+                if ((funcNestingLevel > 0)); then
+                    streamToken N$value; output+=$g_returnString
+                else
+                    [[ $rhs =~ ^$nextChar([-0-9,.]+)(.*) ]]    # NOTE: We could specify more precisely where negative signs may be placed
+                    value+=$nextChar${BASH_REMATCH[1]}
+                    rhs=${BASH_REMATCH[2]}
+                    streamToken V$value; output+=$g_returnString
+                fi
                 ;;
               /) # date, date range, or division operator (TODO timestamps)
                 local followingPart startingDate
@@ -389,7 +410,7 @@ function parseWhereArgument()
 
                         # Grab the numeric-or-date part after the minus sign
                         [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
-                        followingPart=${BASH_REMATCH[1]} 
+                        followingPart=${BASH_REMATCH[1]}
                         rhs=${BASH_REMATCH[2]}
 
                         # A slash therein indicates a date range; stream it as such
@@ -431,7 +452,7 @@ function parseWhereArgument()
                     if [[ $followingPart =~ ^- ]]; then
                         # Grab the date part after the minus sign
                         [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
-                        followingPart=${BASH_REMATCH[1]} 
+                        followingPart=${BASH_REMATCH[1]}
                         rhs=${BASH_REMATCH[2]}
                         value=$startingDate$followingPart
                         streamToken V$value; output+=$g_returnString
@@ -508,7 +529,7 @@ function parseWhereArgument()
             $rhs =~ ${BASH_REMATCH[2]}
             streamToken $letter${BASH_REMATCH[1]}$letter; output+=$g_returnString
             continue
-        
+
         # $-marked variables. The intention: Force them to be expanded to a name. {{{1
         elif [[ "$rhs" =~ ^\$([*a-z][[:alnum:]]*)(.*) ]]; then
             local value=${BASH_REMATCH[1]}
@@ -525,7 +546,7 @@ function parseWhereArgument()
             [[ $rhs =~ ^"$letter"(.*) ]]
             rhs=${BASH_REMATCH[1]}
             continue
-        
+
         # Markup spaces with a special descriptor
         # TODO Adjust the caller in db_functions to look for the descriptor and handle it properly.
         elif [[ $letter =~ [\ ] ]]; then
@@ -558,7 +579,7 @@ function parseWhereArgument()
 
     done
 
-    if ((nestingLevel!=0)); then
+    if ((globalNestingLevel!=0)); then
         echo Parsing error: Unbalanced parentheses in argument "$1". > /dev/stderr
         return 1
     fi
@@ -616,7 +637,7 @@ function retrieveFullToken()
 
         # Check the termination conditions
         letter=${rhs:0:1}
-        if [[ ! $letter =~ [-\"\'] ]]; then
+        if [[ ! $letter =~ [-${eitherQuote}] ]]; then
             break
         fi
     done
@@ -724,7 +745,7 @@ function streamToken()
 # bufferSpace  (no arguments)
 #
 # Variants of streamToken for use with constant-string values and word sequences.
-# The value is grown inside a buffer so that the complete value can be appended 
+# The value is grown inside a buffer so that the complete value can be appended
 # to the stream as a single token once we have the complete token.
 #
 # This technique allows us to accommodate unprotected, unescaped spaces
@@ -753,11 +774,11 @@ function bufferToken()
 
             # Another "W" for an already-W buffer means it's a compound expandable ("X") from what we can tell **SO FAR**.
             if [[ $newTokenType == "W" ]]; then
-                updateCompoundTokenType "X" 
+                updateCompoundTokenType "X"
 
             # Anything else would make this a "V"
             else
-                updateCompoundTokenType "V" 
+                updateCompoundTokenType "V"
             fi
 
         # A pre-existing "X" will either remain "X" or become "V".
@@ -768,13 +789,13 @@ function bufferToken()
                 :
 
             # Anything else updates the type to "V".
-            else 
-                updateCompoundTokenType "V" 
+            else
+                updateCompoundTokenType "V"
             fi
 
         # Anything else becomes "V" (only V-likes (true V's, ints, floats, etc.) should get here)
         else
-            updateCompoundTokenType "V" 
+            updateCompoundTokenType "V"
         fi
     fi
 
@@ -817,7 +838,7 @@ function tagIfEndNCV()
 {
     local NCVContent NCVType
 
-    if ((insideNCV)); then
+    if ((insideNCV && ncvNestingLevel==0)); then
 
         # Grab the current NCV expression from the result-in-progress
         [[ $output =~ ${tokenDelimiter}NCV${NCVCount}${tokenDelimiter}(.*) ]]
@@ -833,7 +854,7 @@ function tagIfEndNCV()
             NCVType=V
         fi
 
-        # Encode 
+        # Encode
         streamToken '/'$NCVType$NCVCount; output+=$g_returnString
 
         # Reset the lexing state

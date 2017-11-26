@@ -18,7 +18,7 @@ tokenDelimiter=$'\n'
 ###################################################################
 function showComparison()
 {
-    declare -a expectedArr actualArr 
+    declare -a expectedArr actualArr
     local maxLength=0 i=0 isFailed=$FALSE
 
     OLDFS=$IFS
@@ -36,17 +36,21 @@ function showComparison()
     # Display line-by-line, leaving enough room for the longest array element(s) and showing which lines differ
     # TODO: To really do justice to this comparison, mimic the longest-common-subsequence algorithm.
     printf "%-*s %s\n" $((maxLength+3)) "EXP'D" "RCV'D"
-    i=1
+    i=0
     while [[ -n "${actualArr[i]}" || -n "${expectedArr[i]}" ]]; do
         if [[ -z "${actualArr[i]}" ]]; then
-            printf "%-*s <" $maxLength "${expectedArr[i]}"
+            printf "%-*s <\n" $maxLength "${expectedArr[i]}"
+            isFailed=$TRUE
         elif [[ -z "${expectedArr[i]}" ]]; then
             printf "  > %*s\n" $((maxLength+${#actualArr[i]})) "${actualArr[i]}"   # Parsed column on RHS
+            isFailed=$TRUE
         else
             if [[ "${expectedArr[i]}" == "${actualArr[i]}" ]]; then
                 comparison='  '
-            # Allow some slackness when comparing the NCV terminators
+            # Allow some slackness when comparing NCV and function call terminators
             elif [[ ("${expectedArr[i]}" =~ ^/NCV) && ("${actualArr[i]}" =~ ^/(N?C)?V) ]]; then
+                comparison='  '
+            elif [[ ("${expectedArr[i]}" =~ ^\][0-9]+A$) && ("${actualArr[i]}" =~ ^\][0-9]+A[0-9]+$) ]]; then
                 comparison='  '
             else
                 comparison='<>'
@@ -62,25 +66,32 @@ function showComparison()
 
     if ((isFailed == FALSE)); then
         echo passed.
+        returnValue=$FALSE
     else
         echo "*** FAILED ***"
+        returnValue=$TRUE
     fi
 
     echo
+    return $returnValue
 }
 
 
 ###################################################################
-# testSubclause  <inputString>  <expected sequence> [...]
+# testSubclause  <inputString>  <expected types and tokens ...>
 #
 # Verifies that an input string (comprising any number of NCVs)
-# is parsed into the expected sequence of tokens. See testSingle()
-# for a simplified version that applies to single-NCV inputs
+# is parsed into the expected sequence of type-and-token pairs.
+# You should omit the nesting levels, function arities and NCV counts
+# from your sequence of expected types and tokens since this routine
+# does that bookkeeping for you. Just list the types and tokens and
+# let this routine do the thinking for you.
+# See testSingle() for a simpler version that applies to single-NCV inputs
 ###################################################################
 function testSubclause()
 {
     local inputStr=$1
-    local NCVcount=0 parenLevel=0 funcLevel=0
+    local NCVcount=0 parenLevel=0
     shift
 
     # Construct the string against which to compare our results
@@ -92,11 +103,11 @@ function testSubclause()
 
         case $1 in
             '[') typeIndicator=$1
-                 token=$((++funcLevel))
+                 token=$((++parenLevel))
                  shift
                  ;;
             ']') typeIndicator=$1
-                 token=$((funcLevel--))
+                 token=$((parenLevel--))A
                  shift
                  ;;
             '(') typeIndicator=$1
@@ -112,6 +123,14 @@ function testSubclause()
                  shift
                  ;;
             '}') token='/'NCV$NCVcount    # Do not try to figure out NCV/CV/V
+                 shift
+                 ;;
+              ,) typeIndicator=$1
+                 token=$parenLevel
+                 shift
+                 ;;
+ [-+*/%^\&\|]|'<<'|'>>') typeIndicator=O
+                 token=$1
                  shift
                  ;;
               *) typeIndicator=$1
@@ -132,6 +151,7 @@ function testSubclause()
 
     # compare against the expected result
     showComparison "$expectedResult" "$actualResult"
+    return $?
 }
 
 
@@ -139,31 +159,49 @@ function testSubclause()
 # testSingle  <inputString>  [<expectedType> <expectedToken> [...]]
 #
 # Verifies that a single-NCV input string is parsed
-# into the expected sequence of tokens having the expected types
+# into the expected sequence of tokens having the expected types.
+# See the testSequence() comment header for further information.
 ###################################################################
 function testSingle()
 {
-    local inputStr=$1 parenLevel=0 funcLevel=0
+    local inputStr=$1 parenLevel=0
     shift
-    
+
     # Construct the string against which to compare our results
     # Curly braces are not used because we assume there is just one NCV
     expectedResult=""
     while [[ -n $1 ]]; do
         token=""
-        typeIndicator=$1
-        shift
+        typeIndicator=""
 
         case $1 in
-            '[') token=$((++funcLevel))
+            '[') typeIndicator=$1
+                 token=$((++parenLevel))
+                 shift
                  ;;
-            ']') token=$((funcLevel--))
+            ']') typeIndicator=$1
+                 token=$((parenLevel--))A
+                 shift
                  ;;
-            '(') token=$((++parenLevel))
+            '(') typeIndicator=$1
+                 token=$((++parenLevel))
+                 shift
                  ;;
-            ')') token=$((parenLevel--))
+            ')') typeIndicator=$1
+                 token=$((parenLevel--))
+                 shift
                  ;;
-              *) if [[ $typeIndicator != "S" ]]; then
+              ,) typeIndicator=$1
+                 token=$parenLevel
+                 shift
+                 ;;
+ [-+*/%^\&\|]|'<<'|'>>') typeIndicator=O
+                 token=$1
+                 shift
+                 ;;
+              *) typeIndicator=$1
+                 shift
+                 if [[ $typeIndicator != "S" ]]; then
                      token=$1
                      shift
                  fi
@@ -181,6 +219,7 @@ function testSingle()
 
     # Compare against the expected result
     showComparison "$expectedResult" "$actualResult"
+    return $?
 }
 
 
@@ -199,14 +238,14 @@ function trace()
 
     local v t
 
-    # Strong quote the command name and each of the arguments 
+    # Strong quote the command name and each of the arguments
     for ((i=1; i<=$#; i++));
     do
         eval t=\${$i}
         # Use a transformation that will preserve single quotes embedded in the argument
         v[i]="'"${t//\'/\'\"\'\"\'}"'"
     done
-    
+
     # Toggle shell tracing for the duration of the command
     if ((invert)); then set +xv; else set -xv; fi
     eval "${v[@]:1}"
@@ -246,8 +285,8 @@ arg="1word";    testSingle $arg V $arg    # leading digits --> value
 arg="'w'o'r'd"; testSingle $arg V ${arg//\'/}    # protected characters --> value without protective marks
 arg="w\\o\\rd"; testSingle "$arg" V "wo"$'\r'"d"    # escaped characters --> converted if special, else protected
 arg="w\\+\\rd"; testSingle "$arg" V "w+"$'\r'"d"    # escaped characters --> converted if special, else protected
-arg="w+rd";     testSingle "$arg" W "w" O "+" W "rd"    # operators recognized when unescaped
-arg="w + rd";   testSingle "$arg" W "w" S O "+" S W "rd"    # spaces have no effect except to delimit
+arg="w+rd";     testSingle "$arg" W "w" "+" W "rd"    # operators recognized when unescaped
+arg="w + rd";   testSingle "$arg" W "w" S "+" S W "rd"    # spaces have no effect except to delimit
 arg="w'+^'r'%+'d"; testSingle "$arg" V 'w+^r%+d'    # quotes turn special characters into literals and can appear multiple times
 
 #####################
@@ -259,6 +298,33 @@ testSubclause "$arg" { W this } S B '&' S { W that }
 arg="First Street East || 123 Second Ave"   # Two kinds of compound values
 testSubclause "$arg" { V "First Street East" } S B '|' S { V "123 Second Ave" }
 
+# Grouping parentheses
+arg="(12&&3)||((4&&999)||200)"
+testSubclause "$arg" "(" { N 12 } B '&' { N 3 } ")" B '|' "(" "(" { N 4 } B '&' { N 999 } ")" B '|' { N 200 } ")"
+# Play well with NCV markers in complex situations
+arg='(a+b)'; testSingle "$arg" "(" W a '+' W b ")"
+arg='(((a+b)))'; testSingle "$arg" "(" "(" "(" W a '+' W b ")" ")" ")"
+arg='(((a+b)+c)+d)+e'; testSingle "$arg" "(" "(" "(" W a '+' W b ")" '+' W c ")" '+' W d ")" '+' W e
+arg='a*(b+c)'; testSingle "$arg" W a '*' "(" W b '+' W c ")"
+arg='(a+b)*c'; testSingle "$arg" "(" W a '+' W b ")" '*' W c
+
+#####################
+# Function calls
+#####################
+# 0/1/multiple parameters
+arg="func()";  testSingle $arg F func [ ]
+arg="func(val)"; testSingle $arg F func [ W val ]
+arg="func(val,123,99)"; testSingle $arg F func [ W val , N 123 , N 99 ]
+# Chained
+arg="foo(88)-foo(baz)"; testSingle $arg F foo [ N 88 ] - F foo [ W baz ]
+# Nested
+arg="5+floor(sqrt(n))"; testSingle $arg N 5 "+" F floor [ F sqrt [ W n ] ]
+arg="concat(hello, concat(concat(world, now), str))"
+testSingle "$arg" F concat [ W hello , S F concat [ F concat [ W world , S W now ] , S W str ] ]
+
+# TODO: Mixes of function calls and grouping parentheses
+#arg="f(a*(b+c))"
+
 ##############
 ##############
 ##############
@@ -267,25 +333,11 @@ fi  # if ((0/1)) guard
 ##############
 ##############
 
-# Grouping parentheses
-arg="(12&&3)||((4&&999)||200)"
-testSubclause "$arg" "(" { N 12 } B '&' { N 3 } ")" B '|' "(" "(" { N 4 } B '&' { N 999 } ")" B '|' { N 200 } ")"
+#arg='(a+b)&&(c+d)'; testSingle "$arg" "(" W a '+' W b ")" B '&'
 
-exit 10
+exit $?
 
-# TODO: Detect unbalanced parens.
-
-# Function calls. 0/1/multiple parameters. Singular, chained, nested.
-arg="func()";  testSingle $arg F func "(" ")"
-#arg="func(val)"
-#arg="func(val,123,99)"
-#arg="func(88)-func(baz)"
-#arg="5+floor(sqrt(n))"
-#arg="concat(hello, concat(concat(world, now), s))"
-
-exit 10
-
-# TODO:
+# TODOs of various types
 
 # Comparators; need to test CV- and NCV-type NCVs.
 
@@ -298,7 +350,6 @@ arg="123.45";     testSingle $arg D $arg    # decimal
 
 # TODO:
 # percent-initial regexes, both simple and compound
-
 
 
 # Old stuff. Integrate it whenever ready.

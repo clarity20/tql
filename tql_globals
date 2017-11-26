@@ -3,8 +3,19 @@
 declare -r TRUE=1
 declare -r FALSE=0
 
+declare -r quote1="'"
+declare -r quote2='"'
+declare -r eitherQuote=$quote1$quote2
+
 declare -A tokenTypes
 tokenTypes=(
+    [BOOLEAN]='B'
     [COMPARATOR]='C'
+    [FUNCTION]='F'
+    [NUMERIC]='N'
+    [OPERATOR]='O'
+    [SPACE]='S'
+    [VALUE]='V'  # a known-to-be-constant string value
+    [WORD]='W'   # a word that might be a constant or a variable
 )
 
