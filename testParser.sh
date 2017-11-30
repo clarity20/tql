@@ -133,6 +133,10 @@ function testSubclause()
                  token=$1
                  shift
                  ;;
+      '&&'|'||') typeIndicator=B
+                 token=${1:1}
+                 shift
+                 ;;
               *) typeIndicator=$1
                  shift
                  if [[ $typeIndicator != "S" ]]; then
@@ -197,6 +201,10 @@ function testSingle()
                  ;;
  [-+*/%^\&\|]|'<<'|'>>') typeIndicator=O
                  token=$1
+                 shift
+                 ;;
+      '&&'|'||') typeIndicator=B
+                 token=${1:1}
                  shift
                  ;;
               *) typeIndicator=$1
@@ -292,21 +300,23 @@ arg="w'+^'r'%+'d"; testSingle "$arg" V 'w+^r%+d'    # quotes turn special charac
 #####################
 # Boolean logic and grouping for multiple-NCV arguments
 #####################
-arg="this && that"    # Two simple words
-testSubclause "$arg" { W this } S B '&' S { W that }
+arg="this || that"    # Two simple words
+testSubclause "$arg" { W this } S '||' S { W that }
 
-arg="First Street East || 123 Second Ave"   # Two kinds of compound values
-testSubclause "$arg" { V "First Street East" } S B '|' S { V "123 Second Ave" }
+arg="First Street East || 123 Second Ave"   # Two kinds of compound string values
+testSubclause "$arg" { V "First Street East" } S '||' S { V "123 Second Ave" }
 
 # Grouping parentheses
 arg="(12&&3)||((4&&999)||200)"
-testSubclause "$arg" "(" { N 12 } B '&' { N 3 } ")" B '|' "(" "(" { N 4 } B '&' { N 999 } ")" B '|' { N 200 } ")"
+testSubclause "$arg" "(" { N 12 } '&&' { N 3 } ")" '||' "(" "(" { N 4 } '&&' { N 999 } ")" '||' { N 200 } ")"
 # Play well with NCV markers in complex situations
 arg='(a+b)'; testSingle "$arg" "(" W a '+' W b ")"
 arg='(((a+b)))'; testSingle "$arg" "(" "(" "(" W a '+' W b ")" ")" ")"
 arg='(((a+b)+c)+d)+e'; testSingle "$arg" "(" "(" "(" W a '+' W b ")" '+' W c ")" '+' W d ")" '+' W e
 arg='a*(b+c)'; testSingle "$arg" W a '*' "(" W b '+' W c ")"
 arg='(a+b)*c'; testSingle "$arg" "(" W a '+' W b ")" '*' W c
+
+arg='(a+b)&&(c+d)'; testSingle "$arg" "(" W a '+' W b ")" '&&' "(" W c '+' W d ")"
 
 #####################
 # Function calls
@@ -333,8 +343,10 @@ fi  # if ((0/1)) guard
 ##############
 ##############
 
-#arg='(a+b)&&(c+d)'; testSingle "$arg" "(" W a '+' W b ")" B '&'
-
+arg="(12&&3)||((4&&999)||200)"
+testSubclause "$arg" "(" { N 12 } '&&' { N 3 } ")" '||' "(" "(" { N 4 } '&&' { N 999 } ")" '||' { N 200 } ")"
+#arg='((a+b)&&(c-d))||(e/f)'
+#testSingle "$arg" "(" "(" W a '+' W b ")" B '&' "(" W c - W d ")" ")" B '|' "(" W e '/' W f ")"
 exit $?
 
 # TODOs of various types

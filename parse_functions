@@ -117,7 +117,7 @@ function parseWhereArgument()
             # Grouping parentheses
             else
                 streamToken ')'$globalNestingLevel; output+=$g_returnString
-                ((ncvNestingLevel--))
+                if ((ncvNestingLevel>0)); then ((ncvNestingLevel--)); fi
             fi
 
             ((globalNestingLevel--))
@@ -179,11 +179,17 @@ function parseWhereArgument()
             continue
         fi
 
-        # Mark boolean logic operators.
+        # Mark boolean logic operators. At the same time, back-check the parenthesization
+        # of the NCV-expression just completed
         if [[ "$rhs" =~ ^($g_ANDop|$g_ORop)(.*) ]]; then
             rhs=${BASH_REMATCH[2]}
-            streamToken B"${BASH_REMATCH[1]:0:1}"; output+=$g_returnString     # B& = boolean AND      B| = boolean OR
-            ((ncvNestingLevel=0))
+            if ((ncvNestingLevel > 0)); then
+                # The parentheses are unbalanced. Fix this by moving the NCV flag inside the left parentheses.
+                [[ $output =~ (.*)($tokenDelimiter'NCV'$NCVCount)(.*)($tokenDelimiter'('$globalNestingLevel)(.*) ]]
+                output=${BASH_REMATCH[1]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[2]}${BASH_REMATCH[5]}
+                ((ncvNestingLevel=0))
+            fi
+            streamToken B"$letter"; output+=$g_returnString     # B& = boolean AND      B| = boolean OR
             continue
         fi
 
@@ -838,7 +844,7 @@ function tagIfEndNCV()
 {
     local NCVContent NCVType
 
-    if ((insideNCV && ncvNestingLevel==0)); then
+    if ((insideNCV)); then
 
         # Grab the current NCV expression from the result-in-progress
         [[ $output =~ ${tokenDelimiter}NCV${NCVCount}${tokenDelimiter}(.*) ]]
