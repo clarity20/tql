@@ -7,15 +7,37 @@ declare -r quote1="'"
 declare -r quote2='"'
 declare -r eitherQuote=$quote1$quote2
 
-declare -A tokenTypes
-tokenTypes=(
+# This map defines the markup flags that indicate token type and metadata.
+# We choose an unobtrusive name so the subscripts will stand out.
+declare -A tt
+tt=(
+    [ARITY_MARKER]='A'
     [BOOLEAN]='B'
     [COMPARATOR]='C'
+    [DATE]='D'
+    [DATE_RANGE]='d'
     [FUNCTION]='F'
+    [INT_RANGE]='i'
+    [FLOAT_LIST]='L'
+    [INT_LIST]='l'
     [NUMERIC]='N'
     [OPERATOR]='O'
+    [REGEX_LIST]='R'
     [SPACE]='S'
-    [VALUE]='V'  # a known-to-be-constant string value
-    [WORD]='W'   # a word that might be a constant or a variable
+    [STRING_CONSTANT]='V'
+
+    # A word that might be a string constant or an abbreviated variable name:
+    [EXPANDABLE_WORD]='W'
+
+    # A sequence of words that might be expandable according to special rules,
+    # for handling special intra-query constructs such as DISTINCT and INTERVAL:
+    [EXPANDABLE_SEQUENCE]='X'
+
+    [FILENAME]='@'
+    [BEGIN_GROUP]='('
+    [END_GROUP]=')'
+    [BEGIN_FUNCTION]='['
+    [END_FUNCTION]=']'
+    [SEPARATOR]=','
 )
 

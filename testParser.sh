@@ -150,7 +150,7 @@ function testSubclause()
     done
 
     # Exercise the code being tested
-    parseWhereArgument "$inputStr"
+    parseQueryClause "$inputStr" $TRUE
     actualResult=$g_returnString
 
     # compare against the expected result
@@ -220,7 +220,7 @@ function testSingle()
     done
 
     # Exercise the code being tested
-    parseWhereArgument "$inputStr"
+    parseQueryClause "$inputStr" $TRUE
 
     [[ $g_returnString =~ ^${tokenDelimiter}"NCV1"(.*)$tokenDelimiter/(N?C)?V1 ]]
     actualResult=${BASH_REMATCH[1]}
@@ -275,8 +275,8 @@ if ((0)); then
 ##############
 ##############
 
-# Parser should only accept one argument
-if parseWhereArgument multiple args >/dev/null; then
+# Parser should only accept one or two arguments
+if parseQueryClause lots of args >/dev/null; then
     echo FAIL: Multiple args accepted.
 else
     echo pass: Multiple args rejected.

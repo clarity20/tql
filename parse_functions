@@ -25,20 +25,18 @@ declare -r g_escapeChar='\\'
 g_compoundTokenType=
 g_compoundTokenBuffer=
 
-#TODO Define all markup flags up here. Try to make them all single-character. Instead of using "V"
-#TODO to denote all constant values, be more specific about the value type.
-
 ####################################################################################
-# The parsing/lexing routine for WHERE-clause arguments
+# The parsing/lexing routine for query clauses and clause pieces
 ####################################################################################
-function parseWhereArgument()
+function parseQueryClause()
 {
-    if [[ $# -ne 1 ]]; then
-        echo Usage: $FUNCNAME clauseToBeParsed
+    if [[ $# -gt 2 ]]; then
+        echo Usage: $FUNCNAME clauseToBeParsed [isWhereClause]
         return 1
     fi
 
     local rhs=$1
+    local isWhereClause=${2:-$FALSE}
     declare -i globalNestingLevel=0 funcNestingLevel=0  ncvNestingLevel=0
     declare -i NCVCount=0 insideNCV=0
     local output=""
@@ -64,13 +62,12 @@ function parseWhereArgument()
             # If the pending token was marked as a word, it's really a function name and the current parenthesis
             # is a function parenthesis. We modify the token accordingly (in the pending buffer, where it currently
             # resides) and stream it with the function paren.
-            if [[ $g_compoundTokenType == W ]]; then
+            if [[ $g_compoundTokenType == ${tt[EXPANDABLE_WORD]} ]]; then
                 ((funcNestingLevel++))
 
                 # Mark the pending token as a function name
-                local newTokenType=F
-                g_compoundTokenBuffer=${g_compoundTokenBuffer/$g_compoundTokenType/$newTokenType}
-                g_compoundTokenType=$newTokenType
+                g_compoundTokenBuffer=${g_compoundTokenBuffer/$g_compoundTokenType/${tt[FUNCTION]}}
+                g_compoundTokenType=${tt[FUNCTION]}
 
                 # Stream the token with the function parenthesis indicator
                 streamToken '['$globalNestingLevel; output+=$g_returnString
@@ -195,9 +192,10 @@ function parseWhereArgument()
 
         # TODO Mark isolated (non-list) NULLs. Distinguish them from minus-sign operators...
 
-        # Mark commas as argument separators when inside function calls.
-        if [[ $letter == , && $funcNestingLevel -gt 0 ]]; then
-            streamToken $letter$globalNestingLevel; output+=$g_returnString
+        # Mark commas as argument separators if we are inside a function call or we are not in WHERE-clause mode.
+        # In other situations commas are list-item delimiters and should not be marked at all.
+        if [[ $letter == , && ($funcNestingLevel -gt 0 || $isWhereClause == $FALSE) ]]; then
+            streamToken ${tt[SEPARATOR]}$globalNestingLevel; output+=$g_returnString
             [[ $rhs =~ ^"$letter"(.*) ]]
             rhs=${BASH_REMATCH[1]}
             continue
@@ -398,7 +396,11 @@ function parseWhereArgument()
                     [[ $rhs =~ ^$nextChar([-0-9,.]+)(.*) ]]    # NOTE: We could specify more precisely where negative signs may be placed
                     value+=$nextChar${BASH_REMATCH[1]}
                     rhs=${BASH_REMATCH[2]}
-                    streamToken V$value; output+=$g_returnString
+                    if [[ $value =~ \. ]]; then
+                        streamToken ${tt[FLOATLIST]}$value; output+=$g_returnString
+                    else
+                        streamToken ${tt[INTLIST]}$value; output+=$g_returnString
+                    fi
                 fi
                 ;;
               /) # date, date range, or division operator (TODO timestamps)
@@ -530,23 +532,23 @@ function parseWhereArgument()
             continue
         fi
 
-        # '@'-delimited filenames {{{1
+        # '@'-delimited filenames
         if [[ $rhs =~ ^@([^@]*)@(.*) ]]; then
-            $rhs =~ ${BASH_REMATCH[2]}
-            streamToken $letter${BASH_REMATCH[1]}$letter; output+=$g_returnString
+            fileName=${BASH_REMATCH[1]}
+            rhs=${BASH_REMATCH[2]}
+            streamToken $letter$fileName; output+=$g_returnString
             continue
 
-        # $-marked variables. The intention: Force them to be expanded to a name. {{{1
+        # $-marked variables. The intention: Force them to be expanded to a name.
         elif [[ "$rhs" =~ ^\$([*a-z][[:alnum:]]*)(.*) ]]; then
             local value=${BASH_REMATCH[1]}
             rhs=${BASH_REMATCH[2]}
             streamToken E$value; output+=$g_returnString     # The "E" tag is like the "W" except we intend to FORCE expansion.
             continue
-        fi # }}}}
 
         # Single-character operators
         # TODO Make this list exhaustive. Make sure alternate meanings of these characters are ruled out before this point.
-        if [[ $letter =~ [-+*/%^\&|] ]]; then
+        elif [[ $letter =~ [-+*/%^\&|] ]]; then
             tagIfBeginNCV; insideNCV=$?
             streamToken O$letter; output+=$g_returnString
             [[ $rhs =~ ^"$letter"(.*) ]]
@@ -764,44 +766,46 @@ function bufferToken()
     local newTokenType=$2
     local initialTokenType=$g_compoundTokenType
 
-    # Two steps: (1) Set or reset the token type (2) Buffer the token piece handed to us
+    # Two steps: (1) Set or reset the token type (2) Append the token piece to the buffer
 
-    # Step (1) breaks down two ways depending on whether the buffer is currently empty.
-    # If the buffer is empty, set the token type
+    # The specifics of step (1) depend on whether the buffer is currently empty.
+    # If the buffer is empty, just set the token type
     if [[ -z $g_compoundTokenBuffer ]]; then
         g_compoundTokenType=$newTokenType
         g_compoundTokenBuffer=${tokenDelimiter}$newTokenType
 
-    # If the buffer is not empty, it has been proven compound. Update our guess as to the token type.
+    # If the buffer is not empty, the fact that we've returned to this code proves the token is compound.
+    # We carefully update our guess as to the token type.
     else
 
-        # "W" indicators go stale, changing to either "X" or "V" for compound tokens. So if the buffer has a "W" at flush time, we know it is not compound.
-        if [[ $initialTokenType == "W" ]]; then
+        # Expandable-word indicators go stale once we've determined the token is compound,
+        # so change them appropriately.
+        if [[ $initialTokenType == ${tt[EXPANDABLE_WORD]} ]]; then
 
-            # Another "W" for an already-W buffer means it's a compound expandable ("X") from what we can tell **SO FAR**.
-            if [[ $newTokenType == "W" ]]; then
-                updateCompoundTokenType "X"
+            # A word appended to another word is promoted to a word sequence
+            if [[ $newTokenType == ${tt[EXPANDABLE_WORD]} ]]; then
+                updateCompoundTokenType ${tt[EXPANDABLE_SEQUENCE]}
 
-            # Anything else would make this a "V"
+            # Anything else would make this a string literal
             else
-                updateCompoundTokenType "V"
+                updateCompoundTokenType ${tt[STRING_CONSTANT]}
             fi
 
-        # A pre-existing "X" will either remain "X" or become "V".
-        elif [[ $initialTokenType == "X" ]]; then
+        # A word sequence is promoted to a string literal if the new token piece is not a word
+        elif [[ $initialTokenType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
 
-            # A "W" token preserves the compound type as "X"
-            if [[ $newTokenType == "W" ]]; then
+            # The type remains word-sequence if the new piece is a word
+            if [[ $newTokenType == ${tt[EXPANDABLE_WORD]} ]]; then
                 :
 
-            # Anything else updates the type to "V".
+            # Otherwise the token is revealed to be a string literal
             else
-                updateCompoundTokenType "V"
+                updateCompoundTokenType ${tt[STRING_LITERAL]}
             fi
 
-        # Anything else becomes "V" (only V-likes (true V's, ints, floats, etc.) should get here)
+        # Anything else is a string literal (only literal-likes (true literals, ints, floats, etc.) should get here)
         else
-            updateCompoundTokenType "V"
+            updateCompoundTokenType ${tt[STRING_LITERAL]}
         fi
     fi
 
@@ -831,6 +835,8 @@ function updateCompoundTokenType()
 ################################################################################
 function tagIfBeginNCV()
 {
+    if ((!isWhereClause)); then return 0; fi
+
     if ((! insideNCV)); then
         streamToken 'NCV'$((++NCVCount)); output+=$g_returnString
         return 1
@@ -843,6 +849,8 @@ function tagIfBeginNCV()
 function tagIfEndNCV()
 {
     local NCVContent NCVType
+
+    if ((!isWhereClause)); then return 0; fi
 
     if ((insideNCV)); then
 
