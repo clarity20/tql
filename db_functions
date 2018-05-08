@@ -205,7 +205,7 @@ function parseCompletely()
         # Obtain the table description so we can expand the column names and determine their data types
         # TODO This looks at the first table name only.  Might revisit this later. N.B. expand() requires a fixed-width Desc, so catting
         # TODO the separate desc files together would not work. Perhaps make Desc adjust its column-width values whenever a header line is encountered...
-        loadMasterExpansionList $TQL_HOME/tableDesc/${TABLE_NAMES%%,*}
+        loadTableDescription ${TQL_SCHEMA_CACHE:-$TQL_HOME/tableDesc/${TABLE_NAMES%%,*}}
 
 #TODO Defer where-expanding to generateWhereClause
 #        # Expand the WHERE clause column names
@@ -357,15 +357,20 @@ function parseCompletely()
 }
 
 ####################################################################################
+# loadTableDescription
+# Loads table information from a file (if it exists) or by querying the database
 ####################################################################################
-function loadMasterExpansionList()
+function loadTableDescription()
 {
     local tableDescFile=$1
 
+    # Try to read the table description from a file
     if [[ -f $tableDescFile ]]; then
         mapfile -t < $tableDescFile
         OLDFS=$IFS; IFS=$'\n' g_masterList="${MAPFILE[*]}"
         IFS=$OLDFS
+
+    # Only query the DB if no cached file is available
     else
         g_masterList=$(Desc "$TABLE_NAMES" +column_default -dontExpand)      # subshell because we're calling a script, not a function
     fi
