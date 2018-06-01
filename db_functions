@@ -33,7 +33,7 @@ if ((g_sourcedGlobals!=1)); then
 fi
 
 declare -r delim=$'\n'
-declare -r columnGroupDelim="__"
+declare -r delim2=$'\f'
 declare -r ILLEGAL_DEFAULT_ALPHA=illegalDefaultAlpha
 declare -r ILLEGAL_DEFAULT_NUM=illegalDefaultNum
 declare -r NULL_INDICATOR=-
@@ -83,7 +83,7 @@ g_tableExpansionMacros=\
 g_haveParser=$FALSE
 
 # The data description used to expand abbreviated table or column names; a table description
-g_masterList=""
+g_masterColumnList=""
 
 
 ##############################################################################################
@@ -163,17 +163,17 @@ function parseCompletely()
 
         # Parse out the returned values
         if [[ $g_returnString =~ $threeValueParser ]]; then
-            PRESELECTS=${BASH_REMATCH[1]}
-            POSTSELECTS=${BASH_REMATCH[2]}
+            rawPreselects=${BASH_REMATCH[1]}
+            rawPostselects=${BASH_REMATCH[2]}
             eval set "-- "${BASH_REMATCH[3]}
-            if [[ $PRESELECTS == " " ]]; then PRESELECTS=; fi     ## old way was to use backticks so " " became ""
-            if [[ $POSTSELECTS == " " ]]; then POSTSELECTS=; fi
+            if [[ $rawPreselects == " " ]]; then rawPreselects=; fi     ## old way was to use backticks so " " became ""
+            if [[ $rawPostselects == " " ]]; then rawPostselects=; fi
         fi
     fi
 
     # If required, make special adjustments to the standard column set
     case $retVal in
-        $retCode_clearAllSelections)   STANDARD_COLS=$placeholderForEmpty ;;
+        $retCode_clearAllSelections)   STANDARD_COLS="" ;;
         $retCode_selectMainColumnOnly) STANDARD_COLS=$mainColumn ;;
         *) isOptionOn selectAll $OPTIONS
            if (($?)); then
@@ -191,12 +191,12 @@ function parseCompletely()
 #    getWhereColumnList "$@"
 #    whereAbbrs=$g_returnString
 
-    # Expand the column names unless directed otherwise
+    # Expand the abbreviated names unless directed otherwise
     isOptionOn "dontExpand|de" $OPTIONS
     if (($?)); then
-        # Put together the full SELECT clause without expanding. For UPDATEs this is a no-op.
-        ACTION_CLAUSE=${PRESELECTS}${STANDARD_COLS}${POSTSELECTS}
-
+        # Assemble the full SELECT clause from the three parts without expanding
+        assembleSelectClause "$rawPreselects" "$STANDARD_COLS" "$rawPostselects"
+        ACTION_CLAUSE=$g_returnString
     else
         # To make things easier, come up with a list of table names *without* aliases
         TABLE_NAMES=${TABLES//+( )+([[:alpha:]])*( ),*( )/,}     # in two steps, squeeze out table-name aliases "myTable mt," leaving just the table names
@@ -216,6 +216,7 @@ function parseCompletely()
 
         if ((bIsUpdate)); then
             # Expand the SET clause column names and finish off the clause itself
+#MMMM Address the side effect of reworking expand():
             expandColumnNames "$TABLE_NAMES" "$setAbbrs"
             expandedNames=$g_returnString
             OLDFS="$IFS"; IFS=$',' expandedSetCols=(${expandedNames%$delim*})
@@ -247,33 +248,13 @@ function parseCompletely()
             SET_CLAUSE="SET "$SET_CLAUSE
 
         else
-            # Expand the SELECT clause column names
-# TODO Eliminate "columnGroupDelim" by splitting up the SELECTs here and calling parse() on each one inside a loop, expand()ing where necessary.
-# Currently, expand() naively splits the SELECTs on commas which is not correct in general. We should split only on those commas
-# that are neither quoted nor escaped and which are not inside parentheses. Progress toward that end might include the following
-# little shell experiment which identifies the parenthesized commas and replaces them with a temp marker:
-#    f='1,(2,3,4),(5,6),7';  g=$f; while [[ $g =~ .*(\([^\)]*,[^\)]*\)) ]]; do m=${BASH_REMATCH[1]//,/_}; g=${g/${BASH_REMATCH[1]}/$m}; echo $g; done
-            selectAbbrs=$PRESELECTS${columnGroupDelim}$POSTSELECTS
-            expandColumnNames "$TABLE_NAMES" "$selectAbbrs"
-            expandedNames=$g_returnString
-            expandedNames=${expandedNames%$delim*}        ## We only care about the column names, which are the first part of the return string...
+            # Expand the SELECT clause column names, keeping track of the pre/post distinction
+            expandSelections "$rawPreselects"; preselects=$g_returnString
+            expandSelections "$rawPostselects"; postselects=$g_returnString
 
-            # Put together the full SELECT clause
-            if [[ ! $STANDARD_COLS == $placeholderForEmpty ]]; then
-                # Since the expansion is "PREs,delim,POSTs" we just replace "delim" with STANDARD_COLS
-                ACTION_CLAUSE=${expandedNames/$columnGroupDelim/$STANDARD_COLS}
-            else
-                # Without any STANDARD_COLS, the above technique would give us "PREs, ,POSTs". That double comma
-                # is problematic, so we take the expansion and remove "delim" and one comma.
-                local expandedSelectsRegex="(^|,)$columnGroupDelim(,|$)"
-                if [[ $expandedNames =~ $expandedSelectsRegex ]]; then
-                    if [[ -n ${BASH_REMATCH[2]} ]]; then
-                        ACTION_CLAUSE=${expandedNames/$columnGroupDelim,/}
-                    else
-                        ACTION_CLAUSE=${expandedNames/,$columnGroupDelim/}
-                    fi
-                fi
-            fi
+            # Assemble the full SELECT clause from the three parts
+            assembleSelectClause "$preselects" "$STANDARD_COLS" "$postselects"
+            ACTION_CLAUSE=$g_returnString
         fi
     fi
 
@@ -357,6 +338,105 @@ function parseCompletely()
 }
 
 ####################################################################################
+# assembleSelectClause  <prefix>  <infix>  <suffix>
+#
+# Assembles the select clause from the three parts provided,
+# inserting commas only where appropriate
+####################################################################################
+function assembleSelectClause()
+{
+    local selectClause
+    local preselects=$1
+    local standardColumns=$2
+    local postselects=$3
+
+    selectClause=$preselects
+    if [[ -n $selectClause && -n $standardColumns ]]; then
+        selectClause+=,
+    fi
+    selectClause+=$standardColumns
+    if [[ -n $selectClause && -n $postselects ]]; then
+        selectClause+=,
+    fi
+    selectClause+=$postselects
+
+    g_returnString=$selectClause
+}
+
+####################################################################################
+# expandSelections  <list of selections>
+#
+# Expands a delimited list of SELECT expressions.
+####################################################################################
+function expandSelections()
+{
+    local rawSelections=$1
+
+    selectionDelimiter=$tokenDelimiter${tt[DELIMITER]}"0" # 0 assumes the delimiters have no enclosing parens
+    expandableTypes=${tt[EXPANDABLE_WORD]}${tt[EXPANDABLE_SEQUENCE]}${tt[FUNCTION]}
+
+    # Tokenize the (comma-delimited) list of selections
+    parseQueryClause "$rawSelections"; tokenizedSelections=$g_returnString
+
+    # Handle the selections one-by-one. Each can contain one or more expandable words.
+    completeExpansion=""
+    while [[ -n $tokenizedSelections ]]; do
+
+        # Pull the next selection from the selection list
+        if [[ $tokenizedSelections =~ $selectionDelimiter(.*) ]]; then
+            currentSelection=${tokenizedSelections%${BASH_REMATCH[0]}}
+            tokenizedSelections=${BASH_REMATCH[1]}
+        else
+            currentSelection=$tokenizedSelections
+            tokenizedSelections=""
+        fi
+
+        # Cycle through the abbreviated words within the current selection
+        # to construct a new selection in which all words have been expanded
+        #TODO We will eventually modify this loop to accumulate the lists of expansion candidates
+        #TODO before we prune them down through semantic analysis of the parse tree.
+        #TODO Right now, we are rolling out the architecture that enables us to accumulate them.
+        expandedSelection=""
+        while [[ $currentSelection =~ $tokenDelimiter([$expandableTypes])([^$tokenDelimiter]+)(${tokenDelimiter}.*|$) ]]; do
+            expansionType=${BASH_REMATCH[1]}
+            currentAbbr=${BASH_REMATCH[2]}
+            unexpandablePrefix=${currentSelect%${BASH_REMATCH[0]}}
+            currentSelection=${BASH_REMATCH[3]}
+
+            case $expansionType in
+                ${tt[EXPANDABLE_WORD]})
+                    getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; expansionCandidates=$g_returnString
+                    promptForExpansion "$currentAbbr" "$expansionCandidates"; expandedName=$g_returnString
+                    ;;
+                ${tt[EXPANDABLE_SEQUENCE]})
+#MMMM Needs finishing:
+                    expandSequence "$currentAbbr"; expandedName=$g_returnString
+                    ;;
+                ${tt[FUNCTION]})
+#MMMM Needs finishing:
+                    getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; expansionCandidates=$g_returnString
+                    promptForExpansion "$currentAbbr" "$expansionCandidates"; expandedName=$g_returnString
+                    #MMMM finalizeExpandedFunctionName $expandedName
+                    ;;
+            esac
+
+            # Piece together the expanded string
+            expandedSelection+=$unexpandablePrefix$tokenDelimiter$expansionType$expandedName
+        done
+
+        # The selection is fully expanded. If there is a trailing literal piece, attach it
+        if [[ -n $currentSelection ]]; then
+            expandedSelection+=$currentSelection
+        fi
+        completeExpansion+=$expandedSelection,
+    done
+    completeExpansion=${completeExpansion%,}
+
+    g_returnString=$completeExpansion
+
+}
+
+####################################################################################
 # loadTableDescription
 # Loads table information from a file (if it exists) or by querying the database
 ####################################################################################
@@ -367,12 +447,12 @@ function loadTableDescription()
     # Try to read the table description from a file
     if [[ -f $tableDescFile ]]; then
         mapfile -t < $tableDescFile
-        OLDFS=$IFS; IFS=$'\n' g_masterList="${MAPFILE[*]}"
+        OLDFS=$IFS; IFS=$'\n' g_masterColumnList="${MAPFILE[*]}"
         IFS=$OLDFS
 
     # Only query the DB if no cached file is available
     else
-        g_masterList=$(Desc "$TABLE_NAMES" +column_default -dontExpand)      # subshell because we're calling a script, not a function
+        g_masterColumnList=$(Desc "$TABLE_NAMES" +column_default -dontExpand)      # subshell because we're calling a script, not a function
     fi
 }
 
@@ -507,7 +587,7 @@ function expandFully()
     for excepLine in "${excepList[@]}"; do
         excepWords=($excepLine)
 
-        # Match the nameAbbr against the zeroth word of the array element, which is the regex
+        # Match the abbreviation against the zeroth word of the array element, which is the regex
         if [[ $abbr =~ ${excepWords[0]} ]]; then
 
             # Substitute and recurse. words[0] is the regex, words[1] is the replacement.
@@ -532,65 +612,63 @@ function expandFully()
 }
 
 ############################################################################################
-# expandColumnNames  tables  abbreviatedNames  [extraExpansionMacros]
-# Given a reference list of tables and some possibly-abbreviated column names, this function uses the current global
-# column information to expand those names to their fully-spelled-out equivalents. Other content is left alone
-# (in a perfect world). This function also produces a vector of type-codes showing e.g. which columns require quotes
-# and which do not.
+# getExpanded{Column,Table,Function}Names  tableList  abbreviatedName  [extraExpansionMacros]
 #
-# The abbreviatedNames argument must be comma-delimited.
+# Given a list of tables and an abbreviation for a column, table, or function name,
+# these functions return a list of fully-spelled-out names matching that abbreviation,
+# along with some helpful descriptive information about each name in the list
 ############################################################################################
-function expandColumnNames()
+function getExpandedColumnNames()
 {
     parserSetupCommand=setupColumnInfoParser
     matchFinderCommand=generateColumnNameMatches
     finalizeExpandedNameCommand=finalizeExpandedColumnName
     _expand_substitutionMacros=$g_columnExpansionMacros
 
-    expandAbbreviatedNames "$@"
+    expandAbbreviatedName "$@"
     return $?
 }
 
-############################################################################################
-# expandTableNames  abbreviatedNames  [extraExpansionMacros]
-# Given a list of possibly-abbreviated table names, this function uses the global
-# table information to expand those names to their fully-spelled-out equivalents. Other content is left alone
-# (in a perfect world).
-#
-# The abbreviatedNames argument must be comma-delimited.
-############################################################################################
-function expandTableNames()
+function getExpandedTableNames()
 {
     parserSetupCommand=setupTableInfoParser
     matchFinderCommand=generateTableNameMatches
     finalizeExpandedNameCommand=finalizeExpandedTableName
     _expand_substitutionMacros=$g_tableExpansionMacros
 
-    expandAbbreviatedNames "" "$@"    # Use an empty placeholder for $1 which is intended for column-name expansion only
+    expandAbbreviatedName "" "$@"    # $1 is for column-name expansion only
+    return $?
+}
+
+function getExpandedFunctionNames()
+{
+    parserSetupCommand=setupFunctionInfoParser
+    matchFinderCommand=generateFunctionNameMatches
+    finalizeExpandedNameCommand=finalizeExpandedFunctionName
+    _expand_substitutionMacros=$g_functionExpansionMacros
+
+    expandAbbreviatedName "" "$@"    # $1 is for column-name expansion only
     return $?
 }
 
 ############################################################################################
-# expandAbbreviatedNames  tables  abbreviatedNames  [extraExpansionMacros]
-# The workhorse function for the expand{Column,Table}Names functions above. This is a "private",
+# expandAbbreviatedName  tables  abbreviatedName  [extraExpansionMacros]
+# The workhorse function for the expand{Column,Table}Name functions above. This is a "private",
 # "base-class" function for this family of expander routines and should not be invoked by the outside world.
 #
 # Ultimately this function produces a fully expanded name or a list of names, given an abbreviated
-# name or a list of abbreviations; plus a list of codes containing extra information about the full names
-# retrieved. The expansion is performed by converting the abbreviation into a regex and matching that
+# name; plus a list of data types or other information.
+# The expansion is performed by converting the abbreviation into a regex and matching that
 # against the set of permissible full names.
 ############################################################################################
-function expandAbbreviatedNames()
+function expandAbbreviatedName()
 {
-
-    local inputAbbrevs
-    OLDFS="$IFS"; IFS=$',' inputAbbrevs=($2)
-    IFS="$OLDFS"
+    local nameAbbr=$2
 
     local macroSubstitutionList="$3"$'\n'$_expand_substitutionMacros
-    local nameAbbr matchingName matchingLine
-    declare -a finalNames finalCodes    # return arrays. The codes are used with all column names and as an error indicator for errant tables and columns.
-    declare -i nameCount=0 numCandidates abbrLength retVal=0
+    local matchingName
+    local finalName finalType    # The return values. finalType is also used as an error indicator for bad input
+    declare -i numCandidates=0 abbrLength retVal=0
 
     declare -a _expand_matchList
     local      _expand_nameRegex
@@ -600,239 +678,237 @@ function expandAbbreviatedNames()
     # Initialize the parser settings
     $parserSetupCommand
 
-    # Cycle through the abbreviations to see if we can match them to actual column names
-    for nameAbbr in "${inputAbbrevs[@]}"; do
+    unset _expand_matchList
 
-        numCandidates=0
-        unset matchingLine _expand_matchList
+    ###########
+    # Try a few different regex-based matching techniques for the given abbreviation.
+    ###########
 
-        # Preserve blank / space-filled / special delimiter args
-        if [[ ! "$nameAbbr" =~ [[:alnum:]] ]]; then
-            finalNames[nameCount]="$nameAbbr"
-            finalCodes[nameCount]=XX    # anything besides q (for quote) is ok.
-            ((nameCount++))
-            continue
-        fi
+#TODO If any matching technique returns at least one match, we forego the latter techniques. The result is rarely affected
+#TODO by this shortcut, but a really top-notch implementation would try all possibilities and prioritize.
 
-        ###########
-        # Try a few different regex-based searches on the given abbreviation. They are ordered by the approximate likelihood of their
-        # returning the intended result. Hence if any prior search returns at least one match, we forego the latter searches.
-        ###########
+    ######
+    # Search #0: An old, simple technique no longer used: Post-saturate the abbreviated name with dot-asterisks
+    # e.g. aBcD becomes a.*B.*c.*D.*
 
-        ######
-        # Search #0: An old, simple technique no longer used: Post-saturate the abbreviated name with dot-asterisks
-        # e.g. aBcD becomes a.*B.*c.*D.*
+    ######
+    # Search #1: Apply the list of custom expansion rules to the given abbreviation
 
-        ######
-        # Search #1: Apply the list of custom expansion rules to the given abbreviation
+    if ((numCandidates == 0)); then    # not necessary, but makes the code more readable / uniform.
 
-        if ((numCandidates == 0)); then    # not necessary, but added this for readability / uniformity with the code below.
+        # First create a sequence of words marked as either atomic or expandable.  (no mark -> atomic,  dot mark -> expandable)
+        set -f
+        expandFully "$nameAbbr" "$macroSubstitutionList"
+        _expand_nameRegex=$g_returnString
 
-            # First create a sequence of words marked as either atomic or expandable.  (no mark -> atomic,  dot mark -> expandable)
-            set -f
-            expandFully "$nameAbbr" "$macroSubstitutionList"
-            _expand_nameRegex=$g_returnString
+        # If there are expandable abbreviations, work with them...
+        if [[ "$_expand_nameRegex" =~ (^| )[^.] ]]; then
 
-            # If there are expandable abbreviations, work with them...
-            if [[ "$_expand_nameRegex" =~ (^| )[^.] ]]; then
+            # Patch together the full regex from the sequence of words:
+            #   - If a word was expanded (i.e. is not pre-pended with a dot), preserve it as-is.
+            #   - Else break it up letter-by-letter and transform lowercase letters into case-agnostic particles.
+            #   - Connect all resulting fragments with wildcards.
 
-                # Patch together the full regex from the sequence of words:
-                #   - If a word was expanded (i.e. is not pre-pended with a dot), preserve it as-is.
-                #   - Else break it up letter-by-letter and transform lowercase letters into case-agnostic particles.
-                #   - Connect all resulting fragments with wildcards.
-
-                n=($_expand_nameRegex)
-                for ((i=0; i<${#n[@]}; i++)); do
-                    if [[ ${n[i]} =~ ^\. ]]; then
-                        #n[i]=${n[i]:1}
-                        new[i]=${n[i]:1:1}".*"
-                        for ((l=2; l<${#n[i]}; l++)); do
-                            ltr=${n[i]:l:1}
-                            if [[ "$ltr" =~ [a-z] ]]; then
-                                new[i]+="["${ltr^^}$ltr"].*"
-                            else
-                                new[i]+=$ltr".*"
-                            fi
-                        done
-                    else
-                        new[i]=${n[i]}".*"
-                    fi
-                done
-
-                OLDFS=$IFS; IFS=""
-                _expand_nameRegex="${new[*]}"
-                IFS=$OLDFS
-
-                #TODO Move this out one level?
-                set +f
-
-                # Now we extract the matching entries from the full list of candidates
-                $matchFinderCommand
-                numCandidates=${#_expand_matchList[@]}
-            fi
-        fi  # end of the first expansion/match attempt
-
-        ######
-        # Search #2: Adjust the regex by post-saturating the abbreviated name with ".*"
-        # but treat capitals literally, smalls agnostically, and leading asterisks specially,
-        # and search again; e.g. aBc becomes [Aa].*B.*[Cc].*   and   *aBcD becomes .*[Aa].*B.*[Cc].*D.*
-
-        if ((numCandidates == 0)); then
-
-            _expand_nameRegex=""; upper=${nameAbbr^^}
-            for ((i=0; i<${#nameAbbr}; i++)); do
-
-                # Leading asterisk ==> ".*"
-                if [[ $i == 0 && $nameAbbr =~ ^\* ]]; then
-                    _expand_nameRegex+=.\*
-
-                # X ==> "X.*"
-                elif [[ ${nameAbbr:$i:1} == ${upper:$i:1} ]]; then
-                    _expand_nameRegex+=${upper:i:1}".*"
-
-                # x ==> "[Xx].*"
-                else _expand_nameRegex+="["${upper:$i:1}${nameAbbr:$i:1}"].*"
+            n=($_expand_nameRegex)
+            for ((i=0; i<${#n[@]}; i++)); do
+                if [[ ${n[i]} =~ ^\. ]]; then
+                    #n[i]=${n[i]:1}
+                    new[i]=${n[i]:1:1}".*"
+                    for ((l=2; l<${#n[i]}; l++)); do
+                        ltr=${n[i]:l:1}
+                        if [[ "$ltr" =~ [a-z] ]]; then
+                            new[i]+="["${ltr^^}$ltr"].*"
+                        else
+                            new[i]+=$ltr".*"
+                        fi
+                    done
+                else
+                    new[i]=${n[i]}".*"
                 fi
+            done
+
+            OLDFS=$IFS; IFS=""
+            _expand_nameRegex="${new[*]}"
+            IFS=$OLDFS
+
+            #TODO Move this out one level?
+            set +f
+
+            # Now we extract the matching entries from the full list of candidates
+            $matchFinderCommand
+            numCandidates=${#_expand_matchList[@]}
+        fi
+    fi  # end of the first expansion/match attempt
+
+    ######
+    # Search #2: Adjust the regex by post-saturating the abbreviated name with ".*"
+    # but treat capitals literally, smalls agnostically, and leading asterisks specially,
+    # and search; e.g. aBc becomes [Aa].*B.*[Cc].*   and   *aBcD becomes .*[Aa].*B.*[Cc].*D.*
+
+    if ((numCandidates == 0)); then
+
+        _expand_nameRegex=""; upper=${nameAbbr^^}
+        for ((i=0; i<${#nameAbbr}; i++)); do
+
+            # Leading asterisk ==> ".*"
+            if [[ $i == 0 && $nameAbbr =~ ^\* ]]; then
+                _expand_nameRegex+=.\*
+
+            # X ==> "X.*"
+            elif [[ ${nameAbbr:$i:1} == ${upper:$i:1} ]]; then
+                _expand_nameRegex+=${upper:i:1}".*"
+
+            # x ==> "[Xx].*"
+            else _expand_nameRegex+="["${upper:$i:1}${nameAbbr:$i:1}"].*"
+            fi
+        done
+
+        # Extract the matching entries from the full list of candidates, matching against the modified regex.
+        $matchFinderCommand
+        numCandidates="${#_expand_matchList[@]}"
+    fi
+
+    #####
+    # Search #3: If the abbreviation contains capitals, then the regex contains [A-Z]"." pairs. Relax these to mixed-case and try again.
+
+    if ((numCandidates == 0)); then
+        if [[ $nameAbbr =~ [A-Z] ]]; then
+            while [[ $_expand_nameRegex =~ ([A-Z][.]) ]]; do
+                newPart=${BASH_REMATCH[1]:0:1}
+                newPart="["$newPart${newPart,,}"]."
+                _expand_nameRegex=${_expand_nameRegex/${BASH_REMATCH[1]}/$newPart}
             done
 
             # Extract the matching entries from the full list of candidates, matching against the modified regex.
             $matchFinderCommand
             numCandidates="${#_expand_matchList[@]}"
         fi
+    fi
 
-        #####
-        # Search #3: If the abbreviation contains capitals, then the regex contains [A-Z]"." pairs. Relax these to mixed-case and try again.
+    # If all of the above techniques failed, return the abbreviation as-is and set an error code
+    if ((numCandidates == 0)); then
+        g_returnString=$nameAbbr${delim2}""
+        return 1
+    fi
 
-        if ((numCandidates == 0)); then
-            if [[ $nameAbbr =~ [A-Z] ]]; then
-                while [[ $_expand_nameRegex =~ ([A-Z][.]) ]]; do
-                    newPart=${BASH_REMATCH[1]:0:1}
-                    newPart="["$newPart${newPart,,}"]."
-                    _expand_nameRegex=${_expand_nameRegex/${BASH_REMATCH[1]}/$newPart}
-                done
+    # If any of the above techniques gave us a single definitive answer, then use it
+    if ((numCandidates == 1)); then
+        g_returnString=${_expand_matchList[0]//$delim/$delim2}   # Change the delimiting of the matchList pieces for convenience.
+        return 0
 
-                # Extract the matching entries from the full list of candidates, matching against the modified regex.
-                $matchFinderCommand
-                numCandidates="${#_expand_matchList[@]}"
+    # If multiple matches turned up, address the ambiguity
+    elif ((numCandidates > 1)); then
+
+        local currCandidate
+        local candidateIndex=0
+        abbrLength=${#nameAbbr}
+        abbrCapitals=${nameAbbr//[^A-Z]/}
+        unset capitalMatchIndices
+        local capitalMatchesCount=0
+
+        # If one of the candidates is exactly the same as the "abbreviation" (i.e. it's not really an abbreviation), we will choose that one unconditionally.
+        # Otherwise, we pick out those candidates which are exact matches at the word boundaries.
+        for currCandidate in "${_expand_matchList[@]}"; do
+
+            matchingName=${currCandidate%%${delim}*}  # The name is the first field of the candidate record
+
+            # To detect exact matches it is enough to compare the lengths of the abbreviation and the matching candidate,
+            # since the match algorithm is monotone-expanding.
+            if [[ $abbrLength == ${#matchingName} ]]; then
+                g_returnString=${currCandidate//$delim/$delim2}
+                return 0
             fi
-        fi
 
-        # If all of the above techniques failed, put the name in single quotes and set an error code
-        # so the caller can either pass it through silently as a string literal or handle it as he desires.
-        # TODO Quick fix for now: DO NOT quote the arg. Let it be evaluated. Eventually, let the caller try to make better sense of it
-        # TODO by trying to parse out function names, embedded column names, etc.
-        if ((numCandidates == 0)); then
-            finalNames[nameCount]=$nameAbbr    #"'$nameAbbr'"
-            finalCodes[nameCount]=YY
-            ((nameCount++))
-            continue
-        fi
+            # Identify non-exact matches which match exactly at the word boundaries (denoted by capital letters).
+            # This is our criterion when there are no perfect matches.
+            matchCapitals=${matchingName//[^A-Z]/}
+            if [[ "$abbrCapitals" == "$matchCapitals" ]]; then
+                ((capitalMatchIndices[capitalMatchesCount++] = candidateIndex))
+            fi
 
-        # If any of the above techniques gave us a single definitive answer, then use it
-        if ((numCandidates == 1)); then
-            matchingLine=${_expand_matchList[0]}
+            ((candidateIndex++))
+        done
 
-        # If multiple matches turned up, resolve the ambiguity
-        elif ((numCandidates > 1)); then
-
-            local currCandidate
-            local candidateIndex=0
-            abbrLength=${#nameAbbr}
-            abbrCapitals=${nameAbbr//[^A-Z]/}
-            unset capitalMatchIndices
-            local capitalMatchesCount=0
-
-            # If one of the candidates is exactly the same as the "abbreviation" (i.e. it's not really an abbreviation), we will choose that one unconditionally.
-            # More generally, if some candidate is an exact match when we look only at the capital letters, we will prefer it to any other candidates.
-            for currCandidate in "${_expand_matchList[@]}"; do
-
-                matchingName=${currCandidate%%$'\n'*}  # take the first piece of the candidate record (and the only piece if we're working with table names)
-
-                # To detect exact matches it is enough to compare the lengths of the abbreviation and the matching candidate,
-                # since the match algorithm is monotone-expanding.
-                if [[ $abbrLength == ${#matchingName} ]]; then
-                    matchingLine=$currCandidate
-                    break
-                fi
-
-                # Identify non-exact matches which match exactly in their capital letters. This is our criterion when there are no perfect matches.
-                matchCapitals=${matchingName//[^A-Z]/}
-                if [[ "$abbrCapitals" == "$matchCapitals" ]]; then
-                    ((capitalMatchIndices[capitalMatchesCount++] = candidateIndex))
-                fi
-
-                ((candidateIndex++))
+        # If we get here, we have only non-exact matches which match on the word boundaries (capital letters) ...
+        if ((capitalMatchesCount == 1)); then
+            g_returnString=${_expand_matchList[capitalMatchIndices[0]]//$delim/$delim2}
+            return 0
+        elif ((capitalMatchesCount > 1)); then
+            # Reduce the candidates list to the records which meet the word boundaries criterion
+            for ((candidateIndex=0; candidateIndex < capitalMatchesCount; candidateIndex++)); do
+                _expand_matchList[candidateIndex]=${_expand_matchList[capitalMatchIndices[candidateIndex]]}
             done
-
-            # Prune down the list of matches based on the above analysis
-            if [[ -z $matchingLine ]]; then
-                if ((capitalMatchesCount == 1)); then
-                    matchingLine=${_expand_matchList[capitalMatchIndices[0]]}
-                elif ((capitalMatchesCount > 1)); then
-                    # Deflate the candidate matches list
-                    for ((candidateIndex=0; candidateIndex < capitalMatchesCount; candidateIndex++)); do
-                        _expand_matchList[candidateIndex]=${_expand_matchList[capitalMatchIndices[candidateIndex]]}
-                    done
-                    while ((candidateIndex < numCandidates)); do
-                        unset _expand_matchList[candidateIndex++]
-                    done
-                fi
-            fi
-
-            # If we cannot identify a single "best" match, we ask the user to choose one from the list
-            if [[ -z $matchingLine ]]; then
-                echo Please enter a number for \"$nameAbbr\": > /dev/stderr
-                select matchingName in ${_expand_matchList[@]%%$delim*}; do    # This array-chop shd work for both tables and columns
-                    if [[ -z $matchingName ]]; then
-                        # Keep trying until we get a response.
-                        echo ERROR: Please choose a number from the list. > /dev/stderr
-                    else
-                      isArgOfType $REPLY integer    ## REPLY = special shell variable set by select
-                      if (($?)); then
-                        matchingLine=${_expand_matchList[REPLY-1]}
-                        break
-                      else
-                        echo Alphabetic entries: Feature not yet implemented. Ask about recursive expansion. > /dev/stderr
-                        # After the following recursive call, try the following:
-                        # local answer=$(expandColumnNames "$1" $REPLY)
-                        # finalNames[i] = answer line 1
-                        # finalCodes[i] = answer line 2
-                        # and jump to the next arg in the comma'd list
-                      fi
-                    fi
-                done
-            fi
+            while ((candidateIndex < numCandidates)); do
+                unset _expand_matchList[candidateIndex++]
+            done
+            # Delimit the list of matching records at two levels: record-by-record, and by field within each record
+            OLDFS=$IFS; IFS=$'\n'
+            g_returnString=${_expand_matchList[@]//$delim/$delim2}
+            IFS=$OLDFS
+            return 0
+        else # no matches.
+            g_returnString=$nameAbbr${delim2}""
+            return 2
         fi
+    fi
 
-        $finalizeExpandedNameCommand "$matchingLine"
-
-        ((nameCount++))
-    done  # end loop over list of (abbreviated) column names
-
-    # Return the results as comma-delimited lists
-    #FIXME: The "blob" section in setColumnCode() will break this since it will produce embedded commas!!!
-    OLDFS="$IFS";IFS=$','
-    g_returnString="${finalNames[*]}"
-    g_returnString+=$delim
-    g_returnString+="${finalCodes[*]}"
-    IFS="$OLDFS"
-
-    return $retVal
+    return 0
 }
 
-
 #####################################################################################################
+# promptForExpansion  <abbreviation>  <expansions>
+# Given a list of candidate expansions, will run the user-interactive selection process
+# if the list contains multiple items
+#####################################################################################################
+function promptForExpansion()
+{
+    local abbreviation=$1
+    declare -a matchList
+
+    matchList=($2)
+
+    if [[ ${#matchList[@]} == 1 ]]; then
+        matchingLine=${matchList[0]}
+    else
+        # If we cannot identify a single "best" match, we ask the user to choose one from the list
+        echo Please enter a number for \"$1\": > /dev/stderr
+        select matchingName in ${matchList[@]%%$delim2*}; do    # This array-chop shd work for both tables and columns
+            if [[ -z $matchingName ]]; then
+                # Keep trying until we get a response.
+                echo ERROR: Please choose a number from the list. > /dev/stderr
+            else
+                isArgOfType $REPLY integer    ## REPLY = special shell variable set by select
+                if (($?)); then
+                    matchingLine=${matchList[REPLY-1]}
+                    break
+                else
+                    echo Alphabetic entries: Feature not yet implemented. Ask about recursive expansion. > /dev/stderr
+                    # After the following recursive call, try the following:
+                    # local answer=$(expandColumnNames "$1" $REPLY)
+                    # finalNames[i] = answer line 1
+                    # finalCodes[i] = answer line 2
+                    # and jump to the next arg in the comma-separated list
+                fi
+            fi
+        done
+    fi
+
+    # Break out the name and data from the selected line
+    $finalizeExpandedNameCommand "$matchingLine"
+    return 0
+}
+
 #####################################################################################################
 
 finalizeExpandedTableName()
 {
-    finalNames[nameCount]="$1"
-    finalCodes[nameCount]=""
+    finalName="$1"
+    finalCode=""
 }
 
 finalizeExpandedColumnName()
 {
-    local record="$1"
+    local record="${1//$delim2/$delim}"
 
     [[ $record =~ $threeValueParser ]]
     columnName=${BASH_REMATCH[1]}
@@ -841,8 +917,10 @@ finalizeExpandedColumnName()
 
     setColumnCode $columnName $columnDesc $columnDefault
 
-    finalNames[nameCount]=${g_returnString:3}
-    finalCodes[nameCount]=${g_returnString:0:2}
+    finalName=${g_returnString:3}
+    finalCode=${g_returnString:0:2}
+
+    g_returnString=$finalName
 }
 
 
@@ -854,7 +932,7 @@ function generateTableNameMatches()
 {
     OLDFS=$IFS; IFS=$'\n'
     i=0
-    for line in ${g_masterList#*$'\n'};do   # Skip the list header
+    for line in ${g_masterColumnList#*$'\n'};do   # Skip the list header
 
         # If this table name (column 0 - the only column) matches the regex then take it, else skip this line
         [[ ${line:${_expand_columnOffsets[0]}:${_expand_columnWidths[0]}} =~ ^($_expand_nameRegex) ]]
@@ -872,7 +950,7 @@ function generateColumnNameMatches()
 
     OLDFS=$IFS; IFS=$'\n'
     i=0
-    for line in ${g_masterList#*$'\n'}; do  # Skip the list header
+    for line in ${g_masterColumnList#*$'\n'}; do  # Skip the list header
 
         # Speedup by ruling out non-first-letter matches? Havent tested this:
         #[[ ${_expand_nameRegex:1:2} =~ ${line:${_expand_columnOffsets[1]}:1} ]]    # et cetera
@@ -903,7 +981,7 @@ function setupTableInfoParser()
     unset _expand_columnOffsets _expand_columnWidths
 
     # A table names list is a single column listing the table names. Compare to the columns list which has several columns.
-    [[ ${g_masterList:1} =~ .([^$'\n']*)$'\n' ]]
+    [[ ${g_masterColumnList:1} =~ .([^$'\n']*)$'\n' ]]
     _expand_columnOffsets[0]=1                      # one space in front
     _expand_columnWidths[0]=${#BASH_REMATCH[1]}     # distance to end of line
 }
@@ -914,7 +992,7 @@ function setupColumnInfoParser()
 
     # A column list is multi-column and lists the column names and information about them.
     # Since we will use the fact that the list is fixed width, let's figure out the column offsets
-    [[ ${g_masterList:11} =~ ^((([ ]+)column_name[ ]+)column_type[ ]+)column_default ]]
+    [[ ${g_masterColumnList:11} =~ ^((([ ]+)column_name[ ]+)column_type[ ]+)column_default ]]
     _expand_columnOffsets[0]=1                                # table_name's offset
     _expand_columnOffsets[1]=$((11+${#BASH_REMATCH[3]}))      # add 11 to account for " "table_name in front
     _expand_columnOffsets[2]=$((11+${#BASH_REMATCH[2]}))
@@ -1293,6 +1371,9 @@ function parseOutSelects()
 
     done
 
+    PRESELECTION_LIST=${PRESELECTION_LIST%,}
+    POSTSELECTION_LIST=${POSTSELECTION_LIST#,}
+
     g_returnString=${PRESELECTION_LIST:-$placeholderForEmpty}
     g_returnString+=$delim
     g_returnString+=${POSTSELECTION_LIST:-$placeholderForEmpty}
@@ -1342,7 +1423,7 @@ function generateWhereClause()
     # This function receives a sequence of raw NCV expressions and produces the corresponding WHERE clause,
     # which is a sequence of processed NCV expressions joined together by the correct boolean conjunctions.
     # Our plan of attack is to separate the raw NCVs, call a couple of processing functions on each one
-    # to generate the processed NCVs, and then to determine and provide the correct conjunctions. 
+    # to generate the processed NCVs, and then to determine and provide the correct conjunctions.
 
     # Set the highest-level conjunction, defaulting to AND.
     isOptionOn 'o|or' $OPTIONS
@@ -1363,13 +1444,13 @@ function generateWhereClause()
     while [[ -n $1 ]]; do
 
         # Lexically analyze the argument, decorating the result with suitable markup
-        parseWhereArgument "$1"; parsedStr=$g_returnString
+        parseQueryClause "$1" $TRUE; parsedStr=$g_returnString
 
         # Prepare to walk the lexed argument forward
         local rhs=$parsedStr
         local sql=" $g_mainConjunction ("   # this outermost '(' ensures the "main" conjunctions have least precedence
 
-        # Break up the parsed argument into separate NCVs. For each one, invoke the low-level processors to generate 
+        # Break up the parsed argument into separate NCVs. For each one, invoke the low-level processors to generate
         # the correct SQL and link them together with the right boolean conjunctions
         while [[ -n $rhs ]]; do
 
@@ -1489,7 +1570,7 @@ function normalizeNCVConstruct()
     # Break down the NCV into name, comparator (defaulting to "=") and value. Only the value is guaranteed to be present.
 #TODO In the future, sthg like RHS/LHS would be better names than name & value because of their broader generality.
 #TODO Just avoid shadowing the "rhs" we use in the caller.
-    if [[ $2 =~ (.*)${tokenDelimiter}${tokenTypes[COMPARATOR]}([=\<\!\>]+)(.*) ]]; then
+    if [[ $2 =~ (.*)${tokenDelimiter}${tt[COMPARATOR]}([=\<\!\>]+)(.*) ]]; then
         name=${BASH_REMATCH[1]}
         comparator=${BASH_REMATCH[2]}
         value=${BASH_REMATCH[3]}
@@ -1506,6 +1587,7 @@ function normalizeNCVConstruct()
     isNameGiven=${#name}
 
     # If the comparator is negative ('<>' or '!=') then factor out a NOT and invert the comparator
+    #TODO Mark this "(" for easy deletion in case it turns out to be superfluous
     isNegativeComparator "$comparator"
     if (($?)); then
         sql+=" NOT ("  # The '(' is needed for e.g. regex lists; is superfluous for simple NCVs
@@ -1515,7 +1597,7 @@ function normalizeNCVConstruct()
     fi
 
     # Expand any abbreviated names
-#TODO Expansion is very sensitive to the new lexed string stuff. Not only the names but also certain values 
+#TODO Expansion is very sensitive to the new lexed string stuff. Not only the names but also certain values
 #TODO as well as function names will need to be expanded. This is where we will have to break down name and value
 #TODO and go token-by-token. So we'll prolly pass n, c and v to expand() which will then do the legwork. Instead
 #TODO of getting back a single name and code we'll get back all expanded names & codes for both the LHS and the RHS.
@@ -1525,7 +1607,8 @@ function normalizeNCVConstruct()
         code=${g_returnString#*$delim}      # the code tells us how to treat the value
     fi
 
-    # Load file- and stdin-sourced lists into regular list values and set the "is list" indicator.
+    # Load file- and stdin-sourced lists into regular list values and set the "is list" indicator
+#TODO To get the column name (for stderr), walk the parse tree from the "@@" marker
     if [[ "$value" =~ $embeddedFileRegex ]]; then
         ((_wheres_bIsList = TRUE))
         # If the list is stdin-sourced, prompt the user for the content
@@ -1541,7 +1624,7 @@ function normalizeNCVConstruct()
         _wheres_bIsList=$?
     fi
 
-    # If the value includes a NULL marker, set a flag that we will use to treat NULLs in the necessary special way
+   # If the value includes a NULL marker, set a flag that we will use to treat NULLs in the necessary special way
     # without "disturbing" ordinary values.
     if [[ $value =~ (^|,)$NULL_INDICATOR(,|$) ]]; then
 
