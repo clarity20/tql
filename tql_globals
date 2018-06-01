@@ -38,6 +38,6 @@ tt=(
     [END_GROUP]=')'
     [BEGIN_FUNCTION]='['
     [END_FUNCTION]=']'
-    [SEPARATOR]=','
+    [DELIMITER]=','
 )
 

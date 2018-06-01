@@ -192,10 +192,10 @@ function parseQueryClause()
 
         # TODO Mark isolated (non-list) NULLs. Distinguish them from minus-sign operators...
 
-        # Mark commas as argument separators if we are inside a function call or we are not in WHERE-clause mode.
+        # Mark commas as argument delimiters if we are inside a function call or we are not in WHERE-clause mode.
         # In other situations commas are list-item delimiters and should not be marked at all.
         if [[ $letter == , && ($funcNestingLevel -gt 0 || $isWhereClause == $FALSE) ]]; then
-            streamToken ${tt[SEPARATOR]}$globalNestingLevel; output+=$g_returnString
+            streamToken ${tt[DELIMITER]}$globalNestingLevel; output+=$g_returnString
             [[ $rhs =~ ^"$letter"(.*) ]]
             rhs=${BASH_REMATCH[1]}
             continue
