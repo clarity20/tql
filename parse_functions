@@ -800,12 +800,12 @@ function bufferToken()
 
             # Otherwise the token is revealed to be a string literal
             else
-                updateCompoundTokenType ${tt[STRING_LITERAL]}
+                updateCompoundTokenType ${tt[STRING_CONSTANT]}
             fi
 
         # Anything else is a string literal (only literal-likes (true literals, ints, floats, etc.) should get here)
         else
-            updateCompoundTokenType ${tt[STRING_LITERAL]}
+            updateCompoundTokenType ${tt[STRING_CONSTANT]}
         fi
     fi
 
