@@ -360,6 +360,9 @@ function assembleSelectClause()
     fi
     selectClause+=$postselects
 
+#MMMM Temp fix: strip out all of the markup tags, leaving a pure SELECT clause
+    selectClause=${selectClause//$tokenDelimiter?/}
+
     g_returnString=$selectClause
 }
 
