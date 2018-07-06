@@ -1,29 +1,82 @@
-TQL has developed into such a large project that a full TODO list would be endless.
-This is due in part to the fact that there are endless ways SQL can be improved
-upon for terseness and general ease-of-use for the power user. The number-one
-priority for this project has always been to build out the feature set, making the
-result as useful as possible. Engineering considerations are important but not 
-primary.
+Note 1: The plan is to create a long series of open issues in keeping with
+common open-source practice. For now, this flat ASCII list of (the most
+significant) TODO items will suffice.
 
-Style issues
-    Why bash? It was fine when this project was just a few small scripts that made
-        a few basic DB queries easier. A rewrite in, say, Python would be nice.
-    Line wrapping needs to be improved
-    Group related functions into separate files
-    Settle upon a single convention for variable naming:
-        Capitalized versus lowercase names
-        When & how to indicate variable scope in the name
+Note 2: TQL is ambitious enough that a full TODO list would be endless. First
+of all, there are countless ways to improve upon command-line SQL for more
+terseness and general ease-of-use for the power user. Second of all, the top
+priority for this project has always been to build out the feature set to make
+the project as useful (and interesting) as possible. Engineering concerns are
+secondary. The code is good but, as with any project, the code can be improved
+in various ways. This alone gives rise to a fairly extensive TODO list. See
+"Style TODO" for a start.
 
-Documentation
+Features TODO
+    Expression Master: A large architectural change having three major parts.
+        The TODOs in this section are grouped according to the part that they
+        apply to. The overarching project will expand the universe of
+        acceptable input expressions so that many more kinds of queries can be
+        realized through the TQL engine.
+
+        (1) lexer/parser: Implementation nearly done.
+            Refactor the NCV-finding logic into a preprocessing step
+            Some edge cases are implemented but not tested
+            Main function body is too long
+            Keep or ditch the space tokens? and superfluous parentheses around NCVs?
+                Add options, --clean/--preserve, with the former the default
+
+        (2) smart expander: In progress.
+            Construct a simplified, high-level expander and query assembler for
+                WHEREs similar to the one used for SELECTs
+            Add the literal string to the candidate match lists in the case of
+                simple right-hand-side expansions
+            Design an expander/assembler for UPDATEs to resemble WHEREs & SELECTs
+            Add function-name expansion capability
+            Add word-sequence expansion capability
+            Identify depth of subexpressions from parens and order-of-operations
+            Define legal combinations of data types and the types that the
+                combinations resolve to
+            Resolve the data types of expressions based on their subtrees
+
+        (3) query builder: Not yet started.
+            Preliminary design work for transformations / "operator overloading"
+            Handle the COUNT(*) function
+
+    Finish the automatic sorting of output lines
+    Finish the "++" prefix operator for SELECT-type arguments
+    Implement -ob,-gb,-go flags for ORDER BY and GROUP BY (-o is already taken)
+    Automatically build a HAVING clause when WHERE is not correct
+    Perfect the candidate list generation (aka "expand()") by using prioritized
+        lists encompassing all matching algorithms 
+    Preliminary design work for UNION queries
+    Preliminary design work for automatic table joining
+
+        <and scores more...>
+
+Style TODO
+    Clean up long lines that wrap
+    Recheck comments for accuracy, needfulness, and comprehensibility
+    Reorganize code into smaller files, focusing on db_functions
+    Consider a case convention for variable and function names
+    Consider when & how to indicate variable scope in the name
+    Clean up the function foldResultSet()
+    Rename the source file db_functions
+    Clean up the God-function parseCompletely()
+    Rewrite in a language that supports object orientation, sophisticated data
+        structures, richer variable scoping, better function call & return
+        protocol, etc. A large undertaking and a nice-to-have; the above items
+        are more important.
+
+Documentation and Presentation TODO
+    Transform this TODO file into a (long?) series of open issues
+    Reorganize and rename project files to comply with open-source conventions
     The README should be mostly a detailed usage document
     Revisit the comments for accuracy and clarity, especially function headers
-    Write a nice history of the project, to be posted in a blog-like format
+    Compose more material for the project blog
 
-Features
-    <Lots of hand-scrawled ideas to be transcribed here>
-
-Automated testing
-    Flesh out testing of the main module. Use new feature work as a springboard.
-    Integrate with a testing framework such as awesome-shell's "bats"
-
+Testing TODO
+    Work toward activating and running all parser test cases at once
+    Parser tests: update for the new token-counting feature
+    Use new features as a springboard to flesh out main-module tests
+    Integrate with an existing testing framework such as awesome-shell's "bats"
 
