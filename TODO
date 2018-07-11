@@ -1,35 +1,35 @@
-Note 1: The plan is to create a long series of open issues in keeping with
-common open-source practice. For now, this flat ASCII list of (the most
-significant) TODO items will suffice.
+Note 1: The plan is to create a list of open issues in keeping with
+common Github practice, but for now this flat ASCII list of the most
+significant TODO items will suffice.
 
 Note 2: TQL is ambitious enough that a full TODO list would be endless. First
-of all, there are countless ways to improve upon command-line SQL for more
+of all, there are countless ways to improve upon command-line SQL for greater
 terseness and general ease-of-use for the power user. Second of all, the top
 priority for this project has always been to build out the feature set to make
-the project as useful (and interesting) as possible. Engineering concerns are
-secondary. The code is good but, as with any project, the code can be improved
-in various ways. This alone gives rise to a fairly extensive TODO list. See
-"Style TODO" for a start.
+the project as useful (and as interesting) as possible. Engineering concerns are
+secondary. The code is good but, as with any project, it can be improved
+in various ways. This alone gives rise to a fairly extensive TODO list. See the
+"Style TODO" section for a start.
 
 Features TODO
     Expression Master: A large architectural change having three major parts.
-        The TODOs in this section are grouped according to the part that they
-        apply to. The overarching project will expand the universe of
-        acceptable input expressions so that many more kinds of queries can be
-        realized through the TQL engine.
+        The entries in this section are grouped according to the part which
+        they apply to. The overarching project will enable the TQL system to
+        convert many more kinds of input expressions into valid SQL queries.
 
         (1) lexer/parser: Implementation nearly done.
             Refactor the NCV-finding logic into a preprocessing step
             Some edge cases are implemented but not tested
             Main function body is too long
-            Keep or ditch the space tokens? and superfluous parentheses around NCVs?
-                Add options, --clean/--preserve, with the former the default
+            Consider ditching the space tokens and any superfluous parentheses
+                around NCVs. Implement through two new options, --clean and
+                --preserve, defaulting to the former.
 
         (2) smart expander: In progress.
             Construct a simplified, high-level expander and query assembler for
                 WHEREs similar to the one used for SELECTs
-            Add the literal string to the candidate match lists in the case of
-                simple right-hand-side expansions
+            Add the literal string to the candidate match lists of
+                simple right-hand-side expressions
             Design an expander/assembler for UPDATEs to resemble WHEREs & SELECTs
             Add function-name expansion capability
             Add word-sequence expansion capability
@@ -47,7 +47,7 @@ Features TODO
     Implement -ob,-gb,-go flags for ORDER BY and GROUP BY (-o is already taken)
     Automatically build a HAVING clause when WHERE is not correct
     Perfect the candidate list generation (aka "expand()") by using prioritized
-        lists encompassing all matching algorithms 
+        lists making use of all matching algorithms 
     Preliminary design work for UNION queries
     Preliminary design work for automatic table joining
 
@@ -58,7 +58,7 @@ Style TODO
     Recheck comments for accuracy, needfulness, and comprehensibility
     Reorganize code into smaller files, focusing on db_functions
     Consider a case convention for variable and function names
-    Consider when & how to indicate variable scope in the name
+    Consider when & how to indicate scope in variable names
     Clean up the function foldResultSet()
     Rename the source file db_functions
     Clean up the God-function parseCompletely()
@@ -69,7 +69,7 @@ Style TODO
 
 Documentation and Presentation TODO
     Transform this TODO file into a (long?) series of open issues
-    Reorganize and rename project files to comply with open-source conventions
+    Reorganize and rename project files to comply with Github conventions
     The README should be mostly a detailed usage document
     Revisit the comments for accuracy and clarity, especially function headers
     Compose more material for the project blog
