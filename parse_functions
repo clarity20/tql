@@ -340,7 +340,7 @@ function parseQueryClause()
         # we must tokenize differently because commas play a different role. We handle that elsewhere.
 
         # Get the first part consisting of alnums, commas, and regexes only.
-        if [[ ($funcNestingLevel -eq 0) && $rhs =~ ^([0-9][$subsequentCharacters]+)(.*) ]]; then
+        if [[ ($funcNestingLevel -eq 0) && $rhs =~ ^([0-9][[:alnum:]%_,]+)(.*) ]]; then
             local tmpToken=${BASH_REMATCH[1]}
             local tmpRhs=${BASH_REMATCH[2]}
 
