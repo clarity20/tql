@@ -729,9 +729,10 @@ function streamToken()
         g_compoundTokenBuffer=""
         g_compoundTokenType=""
 
-        # 3.5. Parser bookkeeping: If the supplied token is a boolean operator or a ')', mark end of NCV.
+        # 3.5. Parser bookkeeping: If the supplied token is a boolean operator or a non-NCV ')', mark end of NCV.
         # (If there is no next token the mark will be added at the end of the main parsing function.)
-        if [[ ${1:0:1} =~ [${tt[END_GROUP]}${tt[BOOLEAN]}] ]]; then
+        local nextTokenLetter=${1:0:1}
+        if [[ (( $nextTokenLetter == ${tt[END_GROUP]} ) && ( $ncvNestingLevel == 0 )) || ( $nextTokenLetter == ${tt[BOOLEAN]} ) ]]; then
             tagIfEndNCV; insideNCV=$?
         fi
 
@@ -746,6 +747,9 @@ function streamToken()
     while [[ -n $1 ]]; do
         g_prevToken=$g_currToken
         g_currToken=$1
+        if [[ $g_currToken =~ ^${tt[BOOLEAN]} ]]; then
+            tagIfEndNCV; insideNCV=$?
+        fi
         g_returnString+=$tokenDelimiter$tokenCount$1
         if [[ -n $tokenCount ]]; then
             ((tokenCount++))
