@@ -48,9 +48,11 @@ function showComparison()
             if [[ "${expectedArr[i]}" == "${actualArr[i]}" ]]; then
                 comparison='  '
             # Allow some slackness when comparing NCV and function call terminators
-            elif [[ ("${expectedArr[i]}" =~ ^/NCV) && ("${actualArr[i]}" =~ ^/(N?C)?V) ]]; then
+            elif [[ ("${expectedArr[i]}" =~ ^${tt[END_NCV]}NCV)
+                 && ("${actualArr[i]}" =~ ^${tt[END_NCV]}(N?C)?V) ]]; then
                 comparison='  '
-            elif [[ ("${expectedArr[i]}" =~ ^\][0-9]+A$) && ("${actualArr[i]}" =~ ^\][0-9]+A[0-9]+$) ]]; then
+            elif [[ ("${expectedArr[i]}" =~ ^${tt[END_FUNCTION]}[0-9]+${tt[FUNCTION_ARITY]}$)
+                 && ("${actualArr[i]}" =~ ^${tt[END_FUNCTION]}[0-9]+${tt[FUNCTION_ARITY]}[0-9]+$) ]]; then
                 comparison='  '
             else
                 comparison='<>'
@@ -80,12 +82,11 @@ function showComparison()
 ###################################################################
 # testSubclause  <inputString>  <expected types and tokens ...>
 #
-# Verifies that an input string (comprising any number of NCVs)
+# Verifies that an input string comprised of any number of NCVs
 # is parsed into the expected sequence of type-and-token pairs.
-# You should omit the nesting levels, function arities and NCV counts
-# from your sequence of expected types and tokens since this routine
-# does that bookkeeping for you. Just list the types and tokens and
-# let this routine do the thinking for you.
+# You should omit the extra bookkeeping information (nesting levels, function
+# arities and NCV counts) from your sequence of expected types and tokens
+# since this routine figures them out for you. Just list the types and tokens.
 # See testSingle() for a simpler version that applies to single-NCV inputs
 ###################################################################
 function testSubclause()
@@ -96,7 +97,7 @@ function testSubclause()
 
     # Construct the string against which to compare our results
     # The caller must use curly braces to represent NCV delimiters
-    local expectedResult=""
+    local expectedResult="" tokenCount="" doBeginNCV=$FALSE
     while [[ -n $1 ]]; do
         typeIndicator=""
         token=""
@@ -107,7 +108,7 @@ function testSubclause()
                  shift
                  ;;
             ']') typeIndicator=$1
-                 token=$((parenLevel--))A
+                 token=$((parenLevel--))${tt[FUNCTION_ARITY]}
                  shift
                  ;;
             '(') typeIndicator=$1
@@ -119,34 +120,44 @@ function testSubclause()
                  shift
                  ;;
             '{') ((NCVcount++))
-                 token=NCV$NCVcount
+                 token=${tt[BEGIN_NCV]}$NCVcount
+                 doBeginNCV=$TRUE
                  shift
                  ;;
-            '}') token='/'NCV$NCVcount    # Do not try to figure out NCV/CV/V
+            '}') token=${tt[END_NCV]}NCV$NCVcount    # Do not try to figure out NCV/CV/V
+                 tokenCount=""
                  shift
                  ;;
               ,) typeIndicator=$1
                  token=$parenLevel
                  shift
                  ;;
- [-+*/%^\&\|]|'<<'|'>>') typeIndicator=O
+ [-+*/%^\&\|]|'<<'|'>>') typeIndicator=${tt[OPERATOR]}
                  token=$1
                  shift
                  ;;
-      '&&'|'||') typeIndicator=B
+      '&&'|'||') typeIndicator=${tt[BOOLEAN]}
                  token=${1:1}
                  shift
                  ;;
               *) typeIndicator=$1
                  shift
-                 if [[ $typeIndicator != "S" ]]; then
+                 if [[ $typeIndicator != ${tt[SPACE]} ]]; then
                      token=$1
                      shift
                  fi
                  ;;
         esac
 
-        expectedResult+=$tokenDelimiter$typeIndicator$token
+        expectedResult+=$tokenDelimiter$tokenCount$typeIndicator$token
+
+        # Update the token count for the next token (if there is one)
+        if [[ $doBeginNCV == $TRUE ]]; then
+            tokenCount=0
+            doBeginNCV=$FALSE
+        elif [[ -n $tokenCount ]]; then
+            ((tokenCount++))
+        fi
     done
 
     # Exercise the code being tested
@@ -164,16 +175,17 @@ function testSubclause()
 #
 # Verifies that a single-NCV input string is parsed
 # into the expected sequence of tokens having the expected types.
-# See the testSequence() comment header for further information.
+# See the testSubclause() comment header for further information.
 ###################################################################
 function testSingle()
 {
     local inputStr=$1 parenLevel=0
+    declare -ir NCVcount=1
     shift
 
     # Construct the string against which to compare our results
     # Curly braces are not used because we assume there is just one NCV
-    expectedResult=""
+    local expectedResult="" tokenCount=0
     while [[ -n $1 ]]; do
         token=""
         typeIndicator=""
@@ -184,7 +196,7 @@ function testSingle()
                  shift
                  ;;
             ']') typeIndicator=$1
-                 token=$((parenLevel--))A
+                 token=$((parenLevel--))${tt[FUNCTION_ARITY]}
                  shift
                  ;;
             '(') typeIndicator=$1
@@ -199,30 +211,32 @@ function testSingle()
                  token=$parenLevel
                  shift
                  ;;
- [-+*/%^\&\|]|'<<'|'>>') typeIndicator=O
+ [-+*/%^\&\|]|'<<'|'>>') typeIndicator=${tt[OPERATOR]}
                  token=$1
                  shift
                  ;;
-      '&&'|'||') typeIndicator=B
+      '&&'|'||') typeIndicator=${tt[BOOLEAN]}
                  token=${1:1}
                  shift
                  ;;
               *) typeIndicator=$1
                  shift
-                 if [[ $typeIndicator != "S" ]]; then
+                 if [[ $typeIndicator != ${tt[SPACE]} ]]; then
                      token=$1
                      shift
                  fi
                  ;;
         esac
 
-        expectedResult+=$tokenDelimiter$typeIndicator$token
+        expectedResult+=$tokenDelimiter$tokenCount$typeIndicator$token
+
+        ((tokenCount++))
     done
 
     # Exercise the code being tested
     parseQueryClause "$inputStr" $TRUE
 
-    [[ $g_returnString =~ ^${tokenDelimiter}"NCV1"(.*)$tokenDelimiter/(N?C)?V1 ]]
+    [[ $g_returnString =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}$NCVcount(.*)$tokenDelimiter${tt[END_NCV]}(N?C)?V$NCVcount ]]
     actualResult=${BASH_REMATCH[1]}
 
     # Compare against the expected result
@@ -298,7 +312,7 @@ arg="w + rd";   testSingle "$arg" W "w" S "+" S W "rd"    # spaces have no effec
 arg="w'+^'r'%+'d"; testSingle "$arg" V 'w+^r%+d'    # quotes turn special characters into literals and can appear multiple times
 
 #####################
-# Boolean logic and grouping for multiple-NCV arguments
+# Boolean logic and parenthetical grouping for multiple-NCV arguments
 #####################
 arg="this || that"    # Two simple words
 testSubclause "$arg" { W this } S '||' S { W that }
@@ -309,14 +323,14 @@ testSubclause "$arg" { V "First Street East" } S '||' S { V "123 Second Ave" }
 # Grouping parentheses
 arg="(12&&3)||((4&&999)||200)"
 testSubclause "$arg" "(" { N 12 } '&&' { N 3 } ")" '||' "(" "(" { N 4 } '&&' { N 999 } ")" '||' { N 200 } ")"
-# Play well with NCV markers in complex situations
+# Play well with NCV delimiters in complex situations
 arg='(a+b)'; testSingle "$arg" "(" W a '+' W b ")"
 arg='(((a+b)))'; testSingle "$arg" "(" "(" "(" W a '+' W b ")" ")" ")"
 arg='(((a+b)+c)+d)+e'; testSingle "$arg" "(" "(" "(" W a '+' W b ")" '+' W c ")" '+' W d ")" '+' W e
 arg='a*(b+c)'; testSingle "$arg" W a '*' "(" W b '+' W c ")"
 arg='(a+b)*c'; testSingle "$arg" "(" W a '+' W b ")" '*' W c
 
-arg='(a+b)&&(c+d)'; testSingle "$arg" "(" W a '+' W b ")" '&&' "(" W c '+' W d ")"
+arg='(a+b)&&(c+d)'; testSubclause "$arg" "(" W a '+' W b ")" '&&' "(" W c '+' W d ")"
 
 #####################
 # Function calls
@@ -332,8 +346,16 @@ arg="5+floor(sqrt(n))"; testSingle $arg N 5 "+" F floor [ F sqrt [ W n ] ]
 arg="concat(hello, concat(concat(world, now), str))"
 testSingle "$arg" F concat [ W hello , S F concat [ F concat [ W world , S W now ] , S W str ] ]
 
-# TODO: Mixes of function calls and grouping parentheses
+# TODO: Mix function calls and grouping parentheses
 #arg="f(a*(b+c))"
+
+arg="(12&&3)||((4&&999)||200)"
+testSubclause "$arg" "(" { N 12 } '&&' { N 3 } ")" '||' "(" "(" { N 4 } '&&' { N 999 } ")" '||' { N 200 } ")"
+arg='((a+b)&&(c-d))||(e/f)'
+testSubclause "$arg" "(" "(" W a '+' W b ")" B '&' "(" W c - W d ")" ")" B '|' "(" W e '/' W f ")"
+
+# Comparators
+arg="a=b";      testSingle $arg ${tt[EXPANDABLE_WORD]} a ${tt[COMPARATOR]} "=" ${tt[EXPANDABLE_WORD]} b
 
 ##############
 ##############
@@ -343,15 +365,12 @@ fi  # if ((0/1)) guard
 ##############
 ##############
 
-arg="(12&&3)||((4&&999)||200)"
-testSubclause "$arg" "(" { N 12 } '&&' { N 3 } ")" '||' "(" "(" { N 4 } '&&' { N 999 } ")" '||' { N 200 } ")"
-#arg='((a+b)&&(c-d))||(e/f)'
-#testSingle "$arg" "(" "(" W a '+' W b ")" B '&' "(" W c - W d ")" ")" B '|' "(" W e '/' W f ")"
+# Comparators, multiple NCVs with token counting
+arg="(a=2)&&(zeta=10)"; testSubclause "$arg" "(" { W a C "=" N 2 } ")" '&&' "(" { W zeta C "=" N "10" } ")"
+
 exit $?
 
 # TODOs of various types
-
-# Comparators; need to test CV- and NCV-type NCVs.
 
 # Different types of numeric and date values
 arg="123";     testSingle $arg N $arg    # integer
@@ -366,7 +385,6 @@ arg="123.45";     testSingle $arg D $arg    # decimal
 
 # Old stuff. Integrate it whenever ready.
 
-#: ${input:='(10||<>20)&&30'}
 #input="foo=bar&&biz||=baz"
 #input="(test=9 && best(1,2)) || zest<10"
 #: ${input:="test=9*ans && best(1,2)+*guess"}
