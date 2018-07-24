@@ -11,20 +11,23 @@ declare -r eitherQuote=$quote1$quote2
 # We choose an unobtrusive name so the subscripts will stand out.
 declare -A tt
 tt=(
-    [ARITY_MARKER]='A'
+    [FUNCTION_ARITY]='A'
     [BOOLEAN]='B'
     [COMPARATOR]='C'
     [DATE]='D'
     [DATE_RANGE]='d'
+    [FORCED_EXPANSION]='E'    # An expandable word that the user has marked with the variable indicator
     [FUNCTION]='F'
     [INT_RANGE]='i'
     [FLOAT_LIST]='L'
     [INT_LIST]='l'
     [NUMERIC]='N'
+    [BEGIN_NCV]='n'
     [OPERATOR]='O'
     [REGEX_LIST]='R'
     [SPACE]='S'
     [STRING_CONSTANT]='V'
+    [AMBIGUOUS_SIGN]='v'    # small v
 
     # A word that might be a string constant or an abbreviated variable name:
     [EXPANDABLE_WORD]='W'
@@ -38,6 +41,7 @@ tt=(
     [END_GROUP]=')'
     [BEGIN_FUNCTION]='['
     [END_FUNCTION]=']'
+    [END_NCV]='/'
     [DELIMITER]=','
 )
 
