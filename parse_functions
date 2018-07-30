@@ -20,7 +20,7 @@ declare -r g_rightParen='[]\)}]'
 declare -r g_escapeChar='\\'
 
 # Introduce some bookkeeping variables that allow us to accept un-protected spaces
-# in constant values so the user can enter hello world in place of hello" "world
+# in string-type arguments so the user can enter hello world instead of hello" "world
 # or "hello world". These variables are used in bufferToken() and streamToken().
 g_compoundTokenType=
 g_compoundTokenBuffer=
@@ -43,7 +43,7 @@ function parseQueryClause()
     local letter="" previousLetter
     local tokenStream="" tokenCount=""
 
-    convertEscapeSequences
+    convertEscapeSequences "$rhs"; rhs=$g_returnString
 
     ################################################################################
     # Main processing loop: Pull tokens off the front of the input string one-by-one
@@ -666,7 +666,9 @@ function retrieveFullToken()
 ####################################################################################
 function convertEscapeSequences()
 {
-    while [[ $rhs =~ $g_escapeChar(.) ]]; do
+    local workString=$1
+
+    while [[ $workString =~ $g_escapeChar(.) ]]; do
 
         # Extract the special character and choose a quoting character.
         local specialChar=${BASH_REMATCH[1]} quoteChar="'"
@@ -688,9 +690,10 @@ function convertEscapeSequences()
         esac
 
         # Surround the replacement text with quotes
-        rhs=${rhs/$g_escapeChar$specialChar/$quoteChar$replacement$quoteChar}
+        workString=${workString/$g_escapeChar$specialChar/$quoteChar$replacement$quoteChar}
     done
 
+    g_returnString=$workString
 }
 
 ################################################################################
