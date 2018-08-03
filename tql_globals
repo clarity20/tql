@@ -42,6 +42,9 @@ tt=(
     [BEGIN_FUNCTION]='['
     [END_FUNCTION]=']'
     [END_NCV]='/'
+    [END_CV]='\'
+    [END_V]='|'
+
     [DELIMITER]=','
 )
 

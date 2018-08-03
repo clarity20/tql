@@ -357,6 +357,9 @@ testSubclause "$arg" "(" "(" W a '+' W b ")" B '&' "(" W c - W d ")" ")" B '|' "
 # Comparators
 arg="a=b";      testSingle $arg ${tt[EXPANDABLE_WORD]} a ${tt[COMPARATOR]} "=" ${tt[EXPANDABLE_WORD]} b
 
+# Comparators, multiple NCVs with token counting
+arg="(a=2)&&(zeta=10)"; testSubclause "$arg" "(" { W a C "=" N 2 } ")" '&&' "(" { W zeta C "=" N "10" } ")"
+
 ##############
 ##############
 ##############
@@ -365,8 +368,23 @@ fi  # if ((0/1)) guard
 ##############
 ##############
 
-# Comparators, multiple NCVs with token counting
-arg="(a=2)&&(zeta=10)"; testSubclause "$arg" "(" { W a C "=" N 2 } ")" '&&' "(" { W zeta C "=" N "10" } ")"
+# Preprocessor-phase NCV detection
+input="(d=5)&&(<=7||(a&&b))"
+expected="(${tokenDelimiter}\
+${tt[BEGIN_NCV]}1d=5${tokenDelimiter}\
+${tt[END_NCV]}1)&&(${tokenDelimiter}\
+${tt[BEGIN_NCV]}2<=7${tokenDelimiter}\
+${tt[END_CV]}2||(${tokenDelimiter}\
+${tt[BEGIN_NCV]}3a${tokenDelimiter}\
+${tt[END_V]}3&&${tokenDelimiter}\
+${tt[BEGIN_NCV]}4b${tokenDelimiter}\
+${tt[END_V]}4))" 
+
+delimitNCVsInString "$input"
+if [[ "$g_returnString" != "$expected" ]]; then
+    echo Error in NCV detection.
+    exit 1
+fi
 
 exit $?
 

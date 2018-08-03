@@ -7,7 +7,7 @@ if ((g_sourcedGlobals!=1)); then
 fi
 
 # Define certain types of tokens
-declare -r g_ANDop='[&][&]'
+declare -r g_ANDop='&&'
 declare -r g_ORop='[|][|]'
 declare -r g_leftParen='[[\({]'
 declare -r g_rightParen='[]\)}]'
@@ -43,7 +43,11 @@ function parseQueryClause()
     local letter="" previousLetter
     local tokenStream="" tokenCount=""
 
+    # Preprocess the input string: clean up escape sequences and delimit the NCV subexpressions
     convertEscapeSequences "$rhs"; rhs=$g_returnString
+    if ((isWhereClause)); then
+        delimitNCVsInString "$rhs"; #MMMM rhs=$g_returnString
+    fi
 
     ################################################################################
     # Main processing loop: Pull tokens off the front of the input string one-by-one
@@ -607,6 +611,99 @@ function parseQueryClause()
     return 0
 }
 
+####################################################################################
+# delimitNCVsInString
+# 
+# Insert NCV delimiter markers in the data stream which also indicate the type of each:
+# NCV, CV or V.
+####################################################################################
+function delimitNCVsInString()
+{
+    local remainingInput=$1 newString=""
+    local workNCV operator
+    local ncvCount=0
+
+    while [[ -n $remainingInput ]]; do
+        # Process one NCV at a time
+        if [[ "$remainingInput" =~ ([\ ]*($g_ANDop|$g_ORop)[\ ]*)(.*) ]]; then
+            workNCV=${remainingInput%${BASH_REMATCH[0]}}
+            operator=${BASH_REMATCH[2]}
+            remainingInput=${BASH_REMATCH[3]}
+        else
+            workNCV=$remainingInput
+            operator=""
+            remainingInput=""
+        fi
+
+        # Figure out the parenthesis imbalance in the working NCV
+        local workNCV2=$workNCV   # set up a temp copy that we can mangle
+        declare -i parenBalance=0
+        while [[ "$workNCV2" =~ ($g_leftParen|$g_rightParen)(.*) ]]; do
+            workNCV2=${BASH_REMATCH[2]}
+            if [[ "${BASH_REMATCH[1]}" =~ $g_leftParen ]]; then
+                ((parenBalance++))
+            else
+                ((parenBalance--))
+            fi
+        done 
+
+        # Trim the working NCV to achieve parenthesis balance
+        workNCV2=$workNCV    # fetch the unaltered NCV
+        local leftSide="" rightSide=""
+        while ((parenBalance > 0)); do
+            # Remove excess left-parens
+            [[ $workNCV2 =~ ^([ ]*${g_leftParen}[ ]*)(.*) ]]
+            leftSide+=${BASH_REMATCH[1]}
+            workNCV2=${BASH_REMATCH[2]}
+            ((parenBalance--))
+        done
+        while ((parenBalance < 0)); do
+            # Remove excess right-parens
+            [[ $workNCV2 =~ (.*)([ ]*${g_rightParen}[ ]*)$ ]]
+            rightSide=${BASH_REMATCH[2]}$rightSide
+            workNCV2=${BASH_REMATCH[1]}
+            ((parenBalance++))
+        done
+
+        # Trim the working NCV to remove superfluous parenthesis pairs
+        while [[ $workNCV2 =~ ^([ ]*${g_leftParen}[ ]*)(.*) ]]; do
+            br1=${BASH_REMATCH[1]}
+            if [[ $workNCV2 =~ (.*)([ ]*${g_rightParen}[ ]*)$ ]]; then
+                leftSide+=$br1
+                rightSide=${BASH_REMATCH[2]}$rightSide
+                workNCV2=${BASH_REMATCH[1]#$br1}
+            else
+                break
+            fi
+        done
+
+        # Patch together the trimmed parts with the appropriate NCV delimiters
+        # to build the new, ncv-delimited string
+
+        # Set the NCV-beginning delimiter
+        tokenCount=""
+        streamToken ${tt[BEGIN_NCV]}$((++ncvCount)); beginDelimiter=$g_returnString
+
+        # Select the NCV-ending delimiter for the NCV type
+        local ncvType
+        if [[ ! "$workNCV2" =~ ([^=\<\!\>]*)([=\<\!\>]+)(.*) ]]; then
+            # Match failed because there is no comparator
+            ncvType=${tt[END_V]}
+        elif [[ -n ${BASH_REMATCH[1]} ]]; then
+            # Comparator is preceded by some text
+            ncvType=${tt[END_NCV]}
+        else
+            # Comparator is all the way at the beginning
+            ncvType=${tt[END_CV]}
+        fi
+        streamToken $ncvType$ncvCount; endDelimiter=$g_returnString
+
+        newString+=$leftSide$beginDelimiter$workNCV2$endDelimiter$rightSide
+        newString+=$operator
+    done
+
+    g_returnString=$newString
+}
 
 ####################################################################################
 # retrieveFullToken
