@@ -1,31 +1,31 @@
 # TQL: the Terse Query Language
-TQL is a software library that makes working with SQL-based RDBMS *massively*
-faster and easier.  If you write and execute *tons* of queries in your daily
-work and you'd love a *competitive* text-based alternative to popular GUI-based
-DB clients, TQL is for you. If you'd love an alternative to SQL that's far more
-concise *and* less fussy about the gory syntactical details you don't want to
-*have* to think about, TQL is for you! If you'd love to shut down that
-GUI-based DB client *for good* in favor of a more integrated workspace, TQL is
-for you!
+TQL is a software library that makes working with relational databases *massively*
+easier than writing and running conventional SQL. If you run *lots* of queries
+and you don't want to sweat the SQL, then TQL is the query language for you.
+TQL is more concise *and* less fussy about query semantics you *don't* want to
+have to think about! So let your machine puzzle it out. (Say goodbye to HAVING
+clauses forever!) And if you'd love to ditch your GUI-based DB client in favor
+of a more integrated workspace, TQL is for you!
 
-TQL's natural home is at your command prompt but it can be embedded anywhere a
+TQL's natural home is at your \*NIX command prompt but it can be embedded anywhere a
 command can be typed and run.
 
 TQL is an ambitious project to find the shortcomings of DML SQL (that is,
 `SELECT`, `INSERT`, `UPDATE` and `DELETE` statements) and wherever feasible, to
 reduce them to more concise, easy-to-use alternatives.  This means less typing
 and less thinking for you. Since TQL is TUI-based, you also get a more
-integrated workspace as you start to need that separate GUI-based tool less and
-less.
+integrated workspace: you can do more from the command line and you need that
+separate GUI-based database tool less and less.
 
-By default, TQL inflates and executes DML queries against your RDBMS engine in
+By default, TQL inflates your queries into valid SQL and runs them against
+your RDBMS engine in
 a single step. (You can disable automatic execution as described below.) TQL
-was originally designed for MySQL databases; compatibility with other DB
-systems is steadily improving and contributions are welcome.
+was originally designed for systems running MySQL; compatibility with other
+dialects of SQL is steadily improving and contributions are welcome.
 
 # Using TQL
-Perhaps the best way to become familiar with TQL is to watch it unfold through
-a well-structured demonstration. We'll walk you through a detailed presentation
+Perhaps the best way to become fluent with TQL is to watch it unfold through
+well-chosen examples. We'll walk you through a detailed presentation
 of all the things TQL can do for you, starting with the simplest of them all.
 Think of it as a guided tour of TQL's own evolution over time from its very
 humble beginnings.
@@ -33,8 +33,8 @@ humble beginnings.
 _*The guided tour: Coming soon*_
 
 ### Auto-execution mode
-To run TQL with query execution turned on (the default), you must set up the
-following three (3) items. A quick example follows:
+To run TQL with query execution turned on (the default behavior), you must set up the
+following three (3) items. We illustrate with a quick example:
 1. a TUI program capable of submitting SQL queries to your RDBMS. For MySQL
 users, this typically means the "mysql" binary bundled with MySQL.
 2. a small wrapper script or shell function for the binary that either knows
@@ -49,21 +49,25 @@ script and another, `TQL_DBNAME` to identify your database.
 
 Corresponding to this script, you would add the following to your shell configs:
 
-    export TQL_DB_WRAPPER=/home/bob/scripts/runTql.sh   (your script's name)
+    export TQL_DB_WRAPPER=/home/bob/scripts/runTql.sh   (or whatever your script's name)
 
 ### Query-only mode
-To disable automatic execution of queries, producing only the inflated query
+To disable automatic execution of queries, producing only the fully-inflated SQL query
 on your standard output, add the '-q' option (long form: '--query') to your
-command invocations.
+TQL command invocations. Steps (1)-(3) above should not be necessary.
 
 # Contributions
 The greatest thing about TQL is how ambitious it is! There is plenty of room
-for growth in all directions: Expanding the main engine to handle more
-subtleties and query types (for example, SELECT clauses containing aliases),
-overcoming various challenges of working with the bare-naked binary provided
-by your RDBMS package (such as the "mysql" that ships with MySQL), streamlining
-the process of fitting TQL to the database(s) you work with regularly,
-improving cross-compatibility with other major relational database systems, and
-of course, improving the documentation.
-###### (and did I mention rewriting the system in python?)
+for growth in all directions: 
+- expanding the range of query features the system can handle (_e.g._ column-name aliases)
+- addressing the shortcomings of popular RDBMS binaries (such as MySQL's "mysql")
+- streamlining the process of fitting TQL to the database(s) you work with regularly
+- adding other dialects of SQL to the TQL-compatibility family
+and of course,
+- improving the documentation.
+###### (and did I mention porting the system to a more suitable language?)
+
+Bug reports and fixes are always welcome.
+We plan on setting up a conventional list of open items on the Issues page in the near future.
+For now, please see the TODO file for a more extensive list of possible enhancements.
 
