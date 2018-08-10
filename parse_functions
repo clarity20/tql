@@ -37,16 +37,17 @@ function parseQueryClause()
 
     local rhs=$1
     local isWhereClause=${2:-$FALSE}
-    declare -i globalNestingLevel=0 funcNestingLevel=0  ncvNestingLevel=0
-    declare -i NCVCount=0 insideNCV=0
+    declare -i globalNestingLevel=0 funcNestingLevel=0
+    declare -i NCVCount=0
     local output=""
-    local letter="" previousLetter
-    local tokenStream="" tokenCount=""
+    local letter="" previousLetter nextLetter
+    local tokensInNCV="" currentNcvType currentSide
+    declare -i wasLeftSideModulus=$FALSE
 
     # Preprocess the input string: clean up escape sequences and delimit the NCV subexpressions
     convertEscapeSequences "$rhs"; rhs=$g_returnString
     if ((isWhereClause)); then
-        delimitNCVsInString "$rhs"; #MMMM rhs=$g_returnString
+        delimitNCVsInString "$rhs"; rhs=$g_returnString
     fi
 
     ################################################################################
@@ -58,9 +59,38 @@ function parseQueryClause()
     while [[ -n $rhs ]]; do
         previousLetter=$letter
         letter=${rhs:0:1}
+        nextLetter=${rhs:1:1}
+
+        # Process NCV delimiter tokens that were added to the input stream during preprocessing
+        if [[ $letter == $tokenDelimiter ]]; then
+            case $nextLetter in
+                ${tt[BEGIN_NCV]})
+                    # Determine the NCV type and the expression side and begin counting tokens
+                    [[ $rhs =~ ${tokenDelimiter}([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}]) ]]
+                    currentNcvType=${BASH_REMATCH[1]}
+                    if [[ "$currentNcvType" == "${tt[END_NCV]}" ]]; then
+                        currentSide=$LEFT_SIDE
+                    else
+                        currentSide=$RIGHT_SIDE
+                    fi
+                    tokensInNCV=0
+                    wasLeftSideModulus=$FALSE
+                    ;;
+                [${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])
+                    currentNcvType=""
+                    currentSide=""
+                    tokensInNCV=""
+                    ;;
+            esac
+            # Copy the NCV delimiter token to the output stream
+            streamToken $nextLetter${rhs:2:1}; output+=$g_returnString
+            # Advance the input stream past this token
+            [[ $rhs =~ ^...(.*) ]]
+            rhs=${BASH_REMATCH[1]}
+            continue
 
         # Identify left and right parentheses. Track their nesting levels and their types (grouping or functional).
-        if [[ $letter =~ $g_leftParen ]]; then
+        elif [[ $letter =~ $g_leftParen ]]; then
             ((globalNestingLevel++))
 
             # If the pending token was marked as a word, it's really a function name and the current parenthesis
@@ -78,9 +108,7 @@ function parseQueryClause()
 
             else
                 # If the pending token is not a word, stream it with the grouping parenthesis indicator
-                tagIfBeginNCV; insideNCV=$?
                 streamToken ${tt[BEGIN_GROUP]}$globalNestingLevel; output+=$g_returnString
-                ((ncvNestingLevel++))
             fi
 
             [[ $rhs =~ ^"$letter"(.*) ]]
@@ -117,93 +145,41 @@ function parseQueryClause()
             # Grouping parentheses
             else
                 streamToken ${tt[END_GROUP]}$globalNestingLevel; output+=$g_returnString
-                if ((ncvNestingLevel>0)); then ((ncvNestingLevel--)); fi
             fi
 
             ((globalNestingLevel--))
             [[ $rhs =~ ^"$letter"(.*) ]]
             rhs=${BASH_REMATCH[1]}
             continue
-        fi
 
         # Identify bit-shift operators and comparators. Since they are similar, just one regex match will do.
-        if [[ $rhs =~ ^([=\<\>\!]{1,2})(.*) ]]; then
+        elif [[ $rhs =~ ^([=\<\>\!]{1,2})(.*) ]]; then
             comp=${BASH_REMATCH[1]}
             rhs=${BASH_REMATCH[2]}
 
-            # If it's a bit-shift operator, tag and append it and move on.
+            # Tokenize and stream the operator or comparator.
             if [[ $comp == '<<' || $comp == '>>' ]]; then
                 streamToken ${tt[OPERATOR]}$comp; output+=$g_returnString
                 continue
+            else
+                # Some lexical analysis: note the transition to the right-hand side of the NCV expression
+                currentSide=$RIGHT_SIDE
+
+                streamToken ${tt[COMPARATOR]}$comp; output+=$g_returnString
+                continue
             fi
 
-            # Otherwise the token is a comparator. Tag it, but before moving on we need to check
-            # for a corner case that would require a special back-fix to the token stream.
-            tagIfBeginNCV; insideNCV=$?
-            streamToken ${tt[COMPARATOR]}$comp; output+=$g_returnString
-
-            # Now for the corner case. If we previously saw a "%" sign and assumed it was an SQL wildcard,
-            # then our seeing a comparator means the "%" was actually a modulus operator, because it occurs on the left side
-            # of the comparator. We will fix the token stream by splitting the surrounding token into two word/value tokens and an intervening "%" operator.
-            # TODO A perfect solution would wrap this in a while loop to fix each suspect percent sign.
-            # TODO We also need to renumber the token counters since we are splitting up tokens here.
-            if ((ambiguousPercentSign)); then
-                # We parse the stream as follows:   (prefix) delim counter type-marker (token) (end-marker or end)
-                [[ $output =~ (.*)${tokenDelimiter}[0-9]+${tt[AMBIGUOUS_SIGN]}([^${tokenDelimiter}]*)(${tokenDelimiter}|$) ]]
-                local oldToken=${BASH_REMATCH[2]}    # token with surrounding markup stripped away
-
-                local newTokenSet=""
-                local leftSide=${oldToken%%%*}
-                local rightSide=${oldToken#$leftSide}
-
-                # Tag and append the first word or value
-                if [[ $oldToken =~ ^([\*[:lower:]][[:alnum:]]*)$ ]]; then        # Is the token (expandable) word-like?
-                    tokenType=${tt[EXPANDABLE_WORD]}
-                else
-                    tokenType=${tt[STRING_CONSTANT]}
-                fi
-                streamToken $tokenType$leftSide; newTokenSet+=$g_returnString
-
-                # Tag and append the % operator
-                streamToken ${tt[OPERATOR]}%; newTokenSet+=$g_returnString
-
-                # Tag and append the second word or value
-                if [[ $newToken =~ ^([\*[:lower:]][[:alnum:]]*)$ ]]; then        # Is the token (expandable) word-like?
-                    tokenType=${tt[EXPANDABLE_WORD]}
-                else
-                    tokenType=${tt[STRING_CONSTANT]}
-                fi
-                streamToken $tokenType$rightSide; newTokenSet+=$g_returnString
-
-                # In the output stream, insert the new token set in place of the old (single) token, overwriting the old markup too
-                output=${output/#${tt[AMBIGUOUS_SIGN]}${oldToken}/$newTokenSet}
-                ambiguousPercentSign=$FALSE
-            fi
-
-            continue
-        fi
-
-        # Mark boolean logic operators. At the same time, back-check the parenthesization
-        # of the NCV-expression just completed
-        if [[ "$rhs" =~ ^($g_ANDop|$g_ORop)(.*) ]]; then
+        # Mark boolean logic operators
+        elif [[ "$rhs" =~ ^($g_ANDop|$g_ORop)(.*) ]]; then
             rhs=${BASH_REMATCH[2]}
-            if ((ncvNestingLevel > 0)); then
-                # The parentheses are unbalanced. Fix this by moving the NCV flag inside the left parentheses.
-                [[ $output =~ (.*)($tokenDelimiter${tt[BEGIN_NCV]}$NCVCount)(.*)($tokenDelimiter[0-9]*${tt[BEGIN_GROUP]}$globalNestingLevel)(.*) ]]
-#MMMM Need to renumber the tokens when we reorder the stream
-#MMMM By refactoring the NCV logic into a preprocessing step we expect this issue to go away
-                output=${BASH_REMATCH[1]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[2]}${BASH_REMATCH[5]}
-                ((ncvNestingLevel=0))
-            fi
             streamToken ${tt[BOOLEAN]}"$letter"; output+=$g_returnString
             continue
-        fi
 
         # TODO Mark isolated (non-list) NULLs. Distinguish them from minus-sign operators...
 
         # Mark commas as argument delimiters if we are inside a function call or we are not in WHERE-clause mode.
         # In other situations commas are list-item delimiters and should not be marked at all.
-        if [[ $letter == , && ($funcNestingLevel -gt 0 || $isWhereClause == $FALSE) ]]; then
+        elif [[ $letter == , && ($funcNestingLevel -gt 0 || $isWhereClause == $FALSE) ]]; then
             streamToken ${tt[DELIMITER]}$globalNestingLevel; output+=$g_returnString
             [[ $rhs =~ ^"$letter"(.*) ]]
             rhs=${BASH_REMATCH[1]}
@@ -249,7 +225,6 @@ function parseQueryClause()
             # If the next character is not a "nonword extender", i.e. it serves to terminate an actual word,
             # then process the word as a true word
             if [[ ! $nextChar =~ $nonwordExtenders ]]; then
-                tagIfBeginNCV; insideNCV=$?
 
                 # If the word begins with a "*", it is a true word only when the "*" is preceded by another operator
                 # or by certain other special characters. Otherwise it is the "times" operator. If it turns out to be
@@ -258,15 +233,16 @@ function parseQueryClause()
                     streamToken ${tt[OPERATOR]}$letter; output+=$g_returnString
                     rhs=${rhs/#"$letter"}
                     continue
+
+                else
+                    # Mark this as a (possible sequence of) expandable words. This enables us to process word sequences
+                    # such as "DISTINCT foobar" and "INTERVAL n DAY".
+                    bufferToken "$rawToken" ${tt[EXPANDABLE_WORD]}
+
+                    # Proceed to the next token
+                    rhs=$tmpRhs
+                    continue
                 fi
-
-                # Mark this as a (possible sequence of) expandable words. This enables us to process word sequences
-                # such as "DISTINCT foobar" and "INTERVAL n DAY".
-                bufferToken "$rawToken" ${tt[EXPANDABLE_WORD]}
-
-                # Proceed to the next token
-                rhs=$tmpRhs
-                continue
             fi
         fi
 
@@ -294,17 +270,13 @@ function parseQueryClause()
 
         # (2) Stream quoted literals.
         if [[ $letter =~ [${eitherQuote}] ]]; then
-            tagIfBeginNCV; insideNCV=$?
             retrieveFullToken
             bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
             continue
-        fi
 
         # (3) Stream "normal" alpha-like string tokens.
         # Grab the first part of the token with respect to quotes and NULL markers
-        if [[ $rhs =~ ^([[:alpha:]_%][[:alnum:]_%,]*)(.*) ]]; then
-            tagIfBeginNCV; insideNCV=$?
-
+        elif [[ $rhs =~ ^([[:alpha:]_%][[:alnum:]_%,]*)(.*) ]]; then
             rawToken+=${BASH_REMATCH[1]}     # Use plus-equals to keep the NULL prefix ("-,") if it's there
             rhs=${BASH_REMATCH[2]}
 
@@ -315,36 +287,26 @@ function parseQueryClause()
             if [[ ($rhs =~ ^[$eitherQuote]) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
                 letter=${rhs:0:1}
 
-                # One or more additional sub-pieces. Grab the whole token.
+                # The token has additional sub-pieces. Grab the whole token.
                 retrieveFullToken
             fi
 
-            # If the proposed token consists of one "%" surrounded by the right kind of text, it could be parsed as either a glob OR a modulus:
-            # e.g. 'foo%5' versus foo%5. We can tell the difference once we know whether the "token" is on the right or left hand side
-            # of the current NCV. For now, we will treat it as a glob and set an indicator, so that we can re-visit and fix if necessary.
+            # Tokens having a percent sign in the middle need to be "decoded" to be properly understood
             if [[ $rawToken =~ % ]]; then
-                # Verify that the first part is word-like, and the last part is either digital or word.
-                local firstPart=${rawToken%%%*}
-                local secondPart=${rawToken#$firstPart%}
-                if [[ $firstPart =~ ^[a-z][[:alnum:]_]*$ && ( $secondPart =~ ^[a-z][[:alnum:]_]*$ || $secondPart =~ ^[0-9]+$ ) ]]; then
-                #if [[ $firstPart =~ ^[0-9]+$ && ( $secondPart =~ ^[0-9]+$ || $secondPart =~ ^[a-z][[:alnum:]_]*$ ) ]]; then
-                    # TODO There remains an unhandled corner case where the second part is a word beginning with "*". What a pain!
-                    # One quick hack of a fix would be to replace every "%*" with "% *" at the very top of this lexer...
-                    ambiguousPercentSign=$TRUE
-                    bufferToken "$rawToken" ${tt[AMBIGUOUS_SIGN]}    # use a special marker here to indicate the exceptional case
-                    continue
-                fi
+                processPercentSignToken "$rawToken" $currentSide $wasLeftSideModulus
+                wasLeftSideModulus=$?
+                continue
+            # Normal tokens can be buffered as-is
+            else
+                bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
+                continue
             fi
-
-            bufferToken "$rawToken" ${tt[STRING_CONSTANT]} 
-            continue
-        fi
 
         # (4) We stream digit-initial alnums that are not numbers per se. When inside a function call,
         # we must tokenize differently because commas play a different role. We handle that elsewhere.
 
         # Get the first part consisting of alnums, commas, and regexes only.
-        if [[ ($funcNestingLevel -eq 0) && $rhs =~ ^([0-9][[:alnum:]%_,]+)(.*) ]]; then
+        elif [[ ($funcNestingLevel -eq 0) && $rhs =~ ^([0-9][[:alnum:]%_,]+)(.*) ]]; then
             local tmpToken=${BASH_REMATCH[1]}
             local tmpRhs=${BASH_REMATCH[2]}
 
@@ -353,7 +315,6 @@ function parseQueryClause()
                 # Strip off the leading part
                 rawToken+=$tmpToken
                 rhs=$tmpRhs
-                tagIfBeginNCV; insideNCV=$?
 
                 # Probe forward across all quoted or NULL parts to get the complete token
                 if [[ ($rhs =~ ^[$eitherQuote]) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
@@ -362,25 +323,16 @@ function parseQueryClause()
                     retrieveFullToken
                 fi
 
-                # If the proposed token consists of one "%" surrounded by the right kind of text, it could be parsed as either a regex OR a modulus:
-                # e.g. 'foo%5' versus foo%5. We can tell the difference once we know whether the "token" is on the right or left hand side
-                # of the current NCV. For now, we will treat it as a regex and set an indicator, so that we can re-visit and fix if necessary.
+                # Tokens having a percent sign in the middle need to be "decoded" to be properly understood
                 if [[ $rawToken =~ % ]]; then
-                    # Since the first part begins with a digit, we need it to be all-digital and the last part to be either digital or word.
-                    local firstPart=${rawToken%%%*}
-                    local secondPart=${rawToken#$firstPart%}
-                    if [[ $firstPart =~ ^[0-9]+$ && ( $secondPart =~ ^[0-9]+$ || $secondPart =~ ^[a-z][[:alnum:]_]*$ ) ]]; then
-                        # TODO There remains an unhandled corner case where first/second part is a word beginning with "*". What a pain!
-                        # One quick hack of a fix would be to replace "%*" with "% *" at the very top of this lexer...
-                        ambiguousPercentSign=$TRUE
-                        bufferToken "$rawToken" ${tt[AMBIGUOUS_SIGN]}  # use a special marker here to indicate the exceptional case
-                        continue
-                    fi
+                    processPercentSignToken "$rawToken" $currentSide $wasLeftSideModulus
+                    wasLeftSideModulus=$?
+                    continue
+                # Normal tokens can be buffered as-is
+                else
+                    bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
+                    continue
                 fi
-
-                # This token has been processed.
-                bufferToken "$rawToken" ${tt[STRING_CONSTANT]} 
-                continue
             fi
         fi
 
@@ -389,8 +341,6 @@ function parseQueryClause()
             local oldRhs=$rhs
             local value=${BASH_REMATCH[1]}
             rhs=${BASH_REMATCH[3]}
-
-            tagIfBeginNCV; insideNCV=$?
 
             # First character beyond the initial number tells us a lot about the full extent of the value
             local nextChar=${rhs:0:1}
@@ -538,10 +488,9 @@ function parseQueryClause()
                 ;;
             esac
             continue
-        fi
 
         # '@'-delimited filenames
-        if [[ $rhs =~ ^@([^@]*)@(.*) ]]; then
+        elif [[ $rhs =~ ^@([^@]*)@(.*) ]]; then
             fileName=${BASH_REMATCH[1]}
             rhs=${BASH_REMATCH[2]}
             streamToken ${tt[FILENAME]}"$fileName"; output+=$g_returnString
@@ -557,36 +506,31 @@ function parseQueryClause()
         # Single-character operators
         # TODO Make this list exhaustive. Make sure alternate meanings of these characters are ruled out before this point.
         elif [[ $letter =~ [-+*/%^\&|] ]]; then
-            tagIfBeginNCV; insideNCV=$?
             streamToken ${tt[OPERATOR]}$letter; output+=$g_returnString
             [[ $rhs =~ ^"$letter"(.*) ]]
             rhs=${BASH_REMATCH[1]}
             continue
 
         # Markup spaces with a special descriptor
-        # TODO Adjust the caller in db_functions to look for the descriptor and handle it properly.
         elif [[ $letter =~ [\ ] ]]; then
 
             # Advance through the input stream
             [[ $rhs =~ ^"$letter"(.*) ]]
             rhs=${BASH_REMATCH[1]}
 
-            # Normally we stream the space immediately as an ordinary token...
+            # Normally we stream a space token immediately...
             if [[ -z $g_compoundTokenBuffer ]]; then
-                if [[ ${rhs:0:1} =~ [\)B] ]]; then
-                    tagIfEndNCV; insideNCV=$?
-                fi
+                # Use streamToken() to delimit the space from whatever precedes it. A raw space is incorrect.
                 streamToken ${tt[SPACE]}; output+=$g_returnString
-            # ...but if we are inside a space-containing ("compound") value, we add it to the value buffer
+            # ...but if we are inside a space-containing ("compound") value, we add it raw to the value buffer
             else
                 bufferSpace
             fi
 
             continue
 
-        # Any material not caught by the above. TODO In a CORRECT input string nothing should get here!
+        # Any material not caught by the above is copied raw. TODO Make sure this doesn't happen!
         else
-            tagIfBeginNCV; insideNCV=$?
             output+=$letter
             [[ $rhs =~ ^"$letter"(.*) ]]
             rhs=${BASH_REMATCH[1]}
@@ -605,16 +549,61 @@ function parseQueryClause()
         streamToken; output+=$g_returnString   # Invoke with no arguments to force a buffer flush only.
     fi
 
-    tagIfEndNCV; insideNCV=$?
-
     g_returnString=$output
     return 0
 }
 
+
+##################################################################################################
+# processPercentSignToken()
+#
+# A string consisting of one "%" surrounded by the right kind of text could be parsed as two kinds of operations:
+# either a glob OR a modulus, e.g. "foo%5" could mean either 'foo%5' OR foo % 5. We can tell the difference
+# by whether the string is on the right or left hand side of the current NCV.
+##################################################################################################
+function processPercentSignToken()
+{
+    local rawToken="$1" side=$2 wasLeftModulus=$3
+    if [[ $rawToken =~ ([^%]*)%([^%]*) ]]; then
+        local leftSide=${BASH_REMATCH[1]}
+        local rightSide=${BASH_REMATCH[2]}
+        local tokenType
+
+        if [[ $side == $LEFT_SIDE || $wasLeftModulus ]]; then
+            # Interpret as 3 tokens: the left side, % as modulus operator, and the right side
+            if [[ $leftSide =~ ^[\*[:lower:]][[:alnum:]]*$ ]]; then
+                tokenType=${tt[EXPANDABLE_WORD]}
+            else
+                tokenType=${tt[STRING_CONSTANT]}
+            fi
+            streamToken $tokenType$leftSide; output+=$g_returnString
+
+            streamToken ${tt[OPERATOR]}%; output+=$g_returnString
+
+            if [[ $rightSide =~ ^[\*[:lower:]][[:alnum:]]$ ]]; then
+                tokenType=${tt[EXPANDABLE_WORD]}
+            else
+                tokenType=${tt[STRING_CONSTANT]}
+            fi
+            streamToken $tokenType$rightSide; output+=$g_returnString
+
+            wasLeftModulus=$TRUE
+            continue
+        else
+            # Interpret the % sign as the globbing operator, streaming the entire rawToken as a single token.
+            bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
+            continue
+        fi
+    fi
+
+    return $wasLeftModulus
+}
+
+
 ####################################################################################
 # delimitNCVsInString
 # 
-# Insert NCV delimiter markers in the data stream which also indicate the type of each:
+# Insert NCV delimiter markers in the data stream which also indicate the type of NCV:
 # NCV, CV or V.
 ####################################################################################
 function delimitNCVsInString()
@@ -681,7 +670,7 @@ function delimitNCVsInString()
         # to build the new, ncv-delimited string
 
         # Set the NCV-beginning delimiter
-        tokenCount=""
+        tokensInNCV=""
         streamToken ${tt[BEGIN_NCV]}$((++ncvCount)); beginDelimiter=$g_returnString
 
         # Select the NCV-ending delimiter for the NCV type
@@ -816,7 +805,8 @@ function streamToken()
         # Flushing the buffer to the stream consists of 4 steps.
 
         # 1. The buffer builder prefetches trailing spaces as it builds up the compound value,
-        # so it might terminate with a superfluous space. If so, pull it off and append it as a regular space token.
+        # so it might terminate with a superfluous space. If so, pull it off, append the buffered
+        # value, and then append a space token (not a raw space).
         if [[ $g_compoundTokenBuffer =~ (.*)" "$ ]]; then
             g_compoundTokenBuffer=${BASH_REMATCH[1]}
             needTrailingSpace=$TRUE      # add the space token in just a moment
@@ -829,13 +819,6 @@ function streamToken()
         g_compoundTokenBuffer=""
         g_compoundTokenType=""
 
-        # 3.5. Parser bookkeeping: If the supplied token is a boolean operator or a non-NCV ')', mark end of NCV.
-        # (If there is no next token the mark will be added at the end of the main parsing function.)
-        local nextTokenLetter=${1:0:1}
-        if [[ (( $nextTokenLetter == ${tt[END_GROUP]} ) && ( $ncvNestingLevel == 0 )) || ( $nextTokenLetter == ${tt[BOOLEAN]} ) ]]; then
-            tagIfEndNCV; insideNCV=$?
-        fi
-
         # 4. If required by step 1, add a space token to the stream.
         if ((needTrailingSpace)); then
             streamToken ${tt[SPACE]}; output+=$g_returnString
@@ -847,12 +830,9 @@ function streamToken()
     while [[ -n $1 ]]; do
         g_prevToken=$g_currToken
         g_currToken=$1
-        if [[ $g_currToken =~ ^${tt[BOOLEAN]} ]]; then
-            tagIfEndNCV; insideNCV=$?
-        fi
-        g_returnString+=$tokenDelimiter$tokenCount$1
-        if [[ -n $tokenCount ]]; then
-            ((tokenCount++))
+        g_returnString+=$tokenDelimiter$tokensInNCV$1
+        if [[ -n $tokensInNCV ]]; then
+            ((tokensInNCV++))
         fi
         shift
     done
@@ -883,9 +863,9 @@ function bufferToken()
     # If the buffer is empty, just set the token type
     if [[ -z $g_compoundTokenBuffer ]]; then
         g_compoundTokenType=$newTokenType
-        : ${tokenCount:=0}
-        g_compoundTokenBuffer=${tokenDelimiter}${tokenCount}$newTokenType
-        ((tokenCount++))
+        : ${tokensInNCV:=0}
+        g_compoundTokenBuffer=${tokenDelimiter}${tokensInNCV}$newTokenType
+        ((tokensInNCV++))
 
     # If the buffer is not empty, the fact that we've returned to this code proves the token is compound.
     # We carefully update our guess as to the token type.
@@ -945,61 +925,5 @@ function updateCompoundTokenType()
     # Update the standalone value type and its place in the buffer
     g_compoundTokenType=$1
     g_compoundTokenBuffer=${g_compoundTokenBuffer/$initialTokenType/$g_compoundTokenType}
-}
-
-################################################################################
-# tagIf{Begin,End}NCV
-# Discover, delimit, and describe all NCV-type expressions
-################################################################################
-function tagIfBeginNCV()
-{
-    if ((!isWhereClause)); then return 0; fi
-
-    if ((! insideNCV)); then
-        tokenCount=""
-        streamToken ${tt[BEGIN_NCV]}$((++NCVCount)); output+=$g_returnString
-        ((tokenCount=0))
-        return 1
-    else
-        return $insideNCV
-    fi
-}
-
-# Determine whether the NCV-type expression is NCV, CV or V, and encode that in the end tag.
-function tagIfEndNCV()
-{
-    local NCVContent NCVType
-
-    if ((!isWhereClause)); then return 0; fi
-
-    if ((insideNCV)); then
-
-        # Grab the current NCV expression from the result-in-progress
-        # Since the token counter was empty here, we omit it from the search regex
-        [[ $output =~ ${tokenDelimiter}${tt[BEGIN_NCV]}${NCVCount}${tokenDelimiter}(.*) ]]
-
-        # Determine its type
-        NCVContent=${BASH_REMATCH[1]}
-        [[ $NCVContent =~ ^([^=\<\!\>]*) ]]   # Look for non-comparator chars at the beginning
-        if [[ -z ${BASH_REMATCH[1]} ]]; then
-            NCVType=CV
-        elif [[ $NCVContent =~ [=\<\!\>]+ ]]; then   # Look for comparator chars anywhere
-            NCVType=NCV
-        else
-            NCVType=V
-        fi
-
-        # Encode
-        tokenCount=""  # In NCV mode, streamToken should only print a count when we are inside a NCV
-        streamToken ${tt[END_NCV]}$NCVType$NCVCount; output+=$g_returnString
-
-        # Reset the lexing state
-        ambiguousPercentSign=$FALSE
-        g_returnString=""    # Needs to be clean inside nested function calls
-        return 0
-
-    else
-        return $insideNCV
-    fi
 }
 

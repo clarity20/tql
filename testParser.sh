@@ -386,9 +386,13 @@ if [[ "$g_returnString" != "$expected" ]]; then
     exit 1
 fi
 
-exit $?
+# Percent as glob and as modulus
+arg="123%St"
+testSingle $arg ${tt[STRING_CONSTANT]} "$arg"
 
-# TODOs of various types
+# Add a percent-initial regex test
+
+exit $?
 
 # Different types of numeric and date values
 arg="123";     testSingle $arg N $arg    # integer
@@ -397,13 +401,8 @@ arg="123.45";     testSingle $arg D $arg    # decimal
 # Different types of lists: regex, alnum, numeric
 
 
-# TODO:
-# percent-initial regexes, both simple and compound
-
-
 # Old stuff. Integrate it whenever ready.
 
-#input="foo=bar&&biz||=baz"
 #input="(test=9 && best(1,2)) || zest<10"
 #: ${input:="test=9*ans && best(1,2)+*guess"}
 #input="test=9 && best(1,worst(2,3))"
