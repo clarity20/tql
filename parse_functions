@@ -75,18 +75,30 @@ function parseQueryClause()
                     fi
                     tokensInNCV=0
                     wasLeftSideModulus=$FALSE
+
+                    # Copy the NCV delimiter token to the output stream
+                    streamToken $nextLetter${rhs:2:1}; output+=$g_returnString
+                    # Advance the input stream past this token
+                    [[ $rhs =~ ^...(.*) ]]
+                    rhs=${BASH_REMATCH[1]}
                     ;;
                 [${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])
                     currentNcvType=""
                     currentSide=""
                     tokensInNCV=""
+
+                    # Copy the NCV delimiter token to the output stream
+                    streamToken $nextLetter${rhs:2:1}; output+=$g_returnString
+                    # Advance the input stream past this token
+                    [[ $rhs =~ ^...(.*) ]]
+                    rhs=${BASH_REMATCH[1]}
+                    ;;
+                ${tt[SPACE]})
+                    streamToken $nextLetter; output+=$g_returnString
+                    [[ $rhs =~ ^..(.*) ]]
+                    rhs=${BASH_REMATCH[1]}
                     ;;
             esac
-            # Copy the NCV delimiter token to the output stream
-            streamToken $nextLetter${rhs:2:1}; output+=$g_returnString
-            # Advance the input stream past this token
-            [[ $rhs =~ ^...(.*) ]]
-            rhs=${BASH_REMATCH[1]}
             continue
 
         # Identify left and right parentheses. Track their nesting levels and their types (grouping or functional).
@@ -555,7 +567,7 @@ function parseQueryClause()
 
 
 ##################################################################################################
-# processPercentSignToken()
+# processPercentSignToken (token, side, wasLeftModulus)
 #
 # A string consisting of one "%" surrounded by the right kind of text could be parsed as two kinds of operations:
 # either a glob OR a modulus, e.g. "foo%5" could mean either 'foo%5' OR foo % 5. We can tell the difference
@@ -590,7 +602,7 @@ function processPercentSignToken()
             wasLeftModulus=$TRUE
             continue
         else
-            # Interpret the % sign as the globbing operator, streaming the entire rawToken as a single token.
+            # Interpret the % sign as the globbing operator and stream the entire rawToken as a single token.
             bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
             continue
         fi
@@ -601,10 +613,10 @@ function processPercentSignToken()
 
 
 ####################################################################################
-# delimitNCVsInString
+# delimitNCVsInString (string)
 # 
-# Insert NCV delimiter markers in the data stream which also indicate the type of NCV:
-# NCV, CV or V.
+# Insert NCV delimiter markers in the data stream which also indicate the type of NCV,
+# namely NCV, CV or V.
 ####################################################################################
 function delimitNCVsInString()
 {
@@ -686,6 +698,10 @@ function delimitNCVsInString()
             ncvType=${tt[END_CV]}
         fi
         streamToken $ncvType$ncvCount; endDelimiter=$g_returnString
+
+        # Tokenize any spaces
+        leftSide=${leftSide// /$tokenDelimiter${tt[SPACE]}}
+        rightSide=${rightSide// /$tokenDelimiter${tt[SPACE]}}
 
         newString+=$leftSide$beginDelimiter$workNCV2$endDelimiter$rightSide
         newString+=$operator
