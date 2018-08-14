@@ -35,19 +35,19 @@ function parseQueryClause()
         return 1
     fi
 
-    local rhs=$1
+    local inputStream=$1
     local isWhereClause=${2:-$FALSE}
     declare -i globalNestingLevel=0 funcNestingLevel=0
     declare -i NCVCount=0
-    local output=""
+    local outputStream=""
     local letter="" previousLetter nextLetter
     local tokensInNCV="" currentNcvType currentSide
     declare -i wasLeftSideModulus=$FALSE
 
     # Preprocess the input string: clean up escape sequences and delimit the NCV subexpressions
-    convertEscapeSequences "$rhs"; rhs=$g_returnString
+    convertEscapeSequences "$inputStream"; inputStream=$g_returnString
     if ((isWhereClause)); then
-        delimitNCVsInString "$rhs"; rhs=$g_returnString
+        delimitNCVsInString "$inputStream"; inputStream=$g_returnString
     fi
 
     ################################################################################
@@ -56,17 +56,17 @@ function parseQueryClause()
     # There are a few cases where we retroactively edit the stream as we discover new information from the input.
     ################################################################################
 
-    while [[ -n $rhs ]]; do
+    while [[ -n $inputStream ]]; do
         previousLetter=$letter
-        letter=${rhs:0:1}
-        nextLetter=${rhs:1:1}
+        letter=${inputStream:0:1}
+        nextLetter=${inputStream:1:1}
 
         # Process NCV delimiter tokens that were added to the input stream during preprocessing
         if [[ $letter == $tokenDelimiter ]]; then
             case $nextLetter in
                 ${tt[BEGIN_NCV]})
                     # Determine the NCV type and the expression side and begin counting tokens
-                    [[ $rhs =~ ${tokenDelimiter}([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}]) ]]
+                    [[ $inputStream =~ ${tokenDelimiter}([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}]) ]]
                     currentNcvType=${BASH_REMATCH[1]}
                     if [[ "$currentNcvType" == "${tt[END_NCV]}" ]]; then
                         currentSide=$LEFT_SIDE
@@ -77,26 +77,21 @@ function parseQueryClause()
                     wasLeftSideModulus=$FALSE
 
                     # Copy the NCV delimiter token to the output stream
-                    streamToken $nextLetter${rhs:2:1}; output+=$g_returnString
+                    streamToken $nextLetter${inputStream:2:1}; outputStream+=$g_returnString
                     # Advance the input stream past this token
-                    [[ $rhs =~ ^...(.*) ]]
-                    rhs=${BASH_REMATCH[1]}
+                    advanceStream "$inputStream" 3; inputStream=$g_returnString
                     ;;
                 [${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])
                     currentNcvType=""
                     currentSide=""
                     tokensInNCV=""
 
-                    # Copy the NCV delimiter token to the output stream
-                    streamToken $nextLetter${rhs:2:1}; output+=$g_returnString
-                    # Advance the input stream past this token
-                    [[ $rhs =~ ^...(.*) ]]
-                    rhs=${BASH_REMATCH[1]}
+                    streamToken $nextLetter${inputStream:2:1}; outputStream+=$g_returnString
+                    advanceStream "$inputStream" 3; inputStream=$g_returnString
                     ;;
                 ${tt[SPACE]})
-                    streamToken $nextLetter; output+=$g_returnString
-                    [[ $rhs =~ ^..(.*) ]]
-                    rhs=${BASH_REMATCH[1]}
+                    streamToken $nextLetter; outputStream+=$g_returnString
+                    advanceStream "$inputStream" 2; inputStream=$g_returnString
                     ;;
             esac
             continue
@@ -116,21 +111,20 @@ function parseQueryClause()
                 g_compoundTokenType=${tt[FUNCTION]}
 
                 # Stream the token with the function parenthesis indicator
-                streamToken ${tt[BEGIN_FUNCTION]}$globalNestingLevel; output+=$g_returnString
+                streamToken ${tt[BEGIN_FUNCTION]}$globalNestingLevel; outputStream+=$g_returnString
 
             else
                 # If the pending token is not a word, stream it with the grouping parenthesis indicator
-                streamToken ${tt[BEGIN_GROUP]}$globalNestingLevel; output+=$g_returnString
+                streamToken ${tt[BEGIN_GROUP]}$globalNestingLevel; outputStream+=$g_returnString
             fi
 
-            [[ $rhs =~ ^"$letter"(.*) ]]
-            rhs=${BASH_REMATCH[1]}
+            advanceStream "$inputStream;" inputStream=$g_rightParen
             continue
 
         elif [[ $letter =~ $g_rightParen ]]; then
             # Assign this ')' the same paren type as its matching '(', which is the nearest one to the left with the same nesting level.
             local parenIndicator=${tt[BEGIN_FUNCTION]}${tt[BEGIN_GROUP]}
-            [[ $output =~ .*$tokenDelimiter[0-9]*([$parenIndicator])$globalNestingLevel(.*) ]]
+            [[ $outputStream =~ .*$tokenDelimiter[0-9]*([$parenIndicator])$globalNestingLevel(.*) ]]
             # Function-type parentheses
             if [[ ${BASH_REMATCH[1]} == ${tt[BEGIN_FUNCTION]} ]]; then
                 local tokenToLookFor tokenOccurrences=0 functionArity
@@ -152,39 +146,38 @@ function parseQueryClause()
                 fi
 
                 # Close the function arg list
-                streamToken ${tt[END_FUNCTION]}$globalNestingLevel${tt[FUNCTION_ARITY]}$functionArity; output+=$g_returnString
+                streamToken ${tt[END_FUNCTION]}$globalNestingLevel${tt[FUNCTION_ARITY]}$functionArity; outputStream+=$g_returnString
                 ((funcNestingLevel--))
             # Grouping parentheses
             else
-                streamToken ${tt[END_GROUP]}$globalNestingLevel; output+=$g_returnString
+                streamToken ${tt[END_GROUP]}$globalNestingLevel; outputStream+=$g_returnString
             fi
 
             ((globalNestingLevel--))
-            [[ $rhs =~ ^"$letter"(.*) ]]
-            rhs=${BASH_REMATCH[1]}
+            advanceStream "$inputStream"; inputStream=$g_returnString
             continue
 
         # Identify bit-shift operators and comparators. Since they are similar, just one regex match will do.
-        elif [[ $rhs =~ ^([=\<\>\!]{1,2})(.*) ]]; then
+        elif [[ $inputStream =~ ^([=\<\>\!]{1,2}) ]]; then
             comp=${BASH_REMATCH[1]}
-            rhs=${BASH_REMATCH[2]}
+            advanceStream "$inputStream" $comp; inputStream=$g_returnString
 
             # Tokenize and stream the operator or comparator.
             if [[ $comp == '<<' || $comp == '>>' ]]; then
-                streamToken ${tt[OPERATOR]}$comp; output+=$g_returnString
+                streamToken ${tt[OPERATOR]}$comp; outputStream+=$g_returnString
                 continue
             else
                 # Some lexical analysis: note the transition to the right-hand side of the NCV expression
                 currentSide=$RIGHT_SIDE
 
-                streamToken ${tt[COMPARATOR]}$comp; output+=$g_returnString
+                streamToken ${tt[COMPARATOR]}$comp; outputStream+=$g_returnString
                 continue
             fi
 
         # Mark boolean logic operators
-        elif [[ "$rhs" =~ ^($g_ANDop|$g_ORop)(.*) ]]; then
-            rhs=${BASH_REMATCH[2]}
-            streamToken ${tt[BOOLEAN]}"$letter"; output+=$g_returnString
+        elif [[ "$inputStream" =~ ^($g_ANDop|$g_ORop) ]]; then
+            advanceStream "$inputStream" ${BASH_REMATCH[1]}; inputStream=$g_returnString
+            streamToken ${tt[BOOLEAN]}"$letter"; outputStream+=$g_returnString
             continue
 
         # TODO Mark isolated (non-list) NULLs. Distinguish them from minus-sign operators...
@@ -192,9 +185,8 @@ function parseQueryClause()
         # Mark commas as argument delimiters if we are inside a function call or we are not in WHERE-clause mode.
         # In other situations commas are list-item delimiters and should not be marked at all.
         elif [[ $letter == , && ($funcNestingLevel -gt 0 || $isWhereClause == $FALSE) ]]; then
-            streamToken ${tt[DELIMITER]}$globalNestingLevel; output+=$g_returnString
-            [[ $rhs =~ ^"$letter"(.*) ]]
-            rhs=${BASH_REMATCH[1]}
+            streamToken ${tt[DELIMITER]}$globalNestingLevel; outputStream+=$g_returnString
+            advanceStream "$inputStream"; inputStream=$g_returnString
             continue
         fi
 
@@ -212,10 +204,10 @@ function parseQueryClause()
 
         # Identify and extract words that might be expandable. We begin by casting a wide net, snagging all simple values
         # that don't begin with a capital because at this stage we can't know which are truly expandable words.
-        if [[ $rhs =~ ^([\*[:lower:]][[:alnum:]]*)(.*) ]]; then        # Words must start in a wordlike way, with star or lowercase
+        if [[ $inputStream =~ ^([\*[:lower:]][[:alnum:]]*)(.*) ]]; then        # Words must start in a wordlike way, with star or lowercase
             rawToken=${BASH_REMATCH[1]}
-            local tmpRhs=${BASH_REMATCH[2]}
-            local nextChar=${tmpRhs:0:1}
+            local tmpStream=${BASH_REMATCH[2]}
+            local nextChar=${tmpStream:0:1}
 
             # Non-words that begin like words will squeeze through the above filter. To recognize them, we look at the following
             # character (if there is one). If the supposed word is a true word, then that character is illegal within a word and
@@ -240,10 +232,10 @@ function parseQueryClause()
 
                 # If the word begins with a "*", it is a true word only when the "*" is preceded by another operator
                 # or by certain other special characters. Otherwise it is the "times" operator. If it turns out to be
-                # the latter, we dump the "*" to the output and continue the main token processing loop
+                # the latter, we dump the "*" to the outputStream and continue the main token processing loop
                 if [[ ($letter == '*') && -n "$previousLetter" && (! "+-*/ (&|" =~ "$previousLetter") ]]; then
-                    streamToken ${tt[OPERATOR]}$letter; output+=$g_returnString
-                    rhs=${rhs/#"$letter"}
+                    streamToken ${tt[OPERATOR]}$letter; outputStream+=$g_returnString
+                    advanceStream "$inputStream"; inputStream=$g_returnString
                     continue
 
                 else
@@ -252,7 +244,7 @@ function parseQueryClause()
                     bufferToken "$rawToken" ${tt[EXPANDABLE_WORD]}
 
                     # Proceed to the next token
-                    rhs=$tmpRhs
+                    inputStream=$tmpStream
                     continue
                 fi
             fi
@@ -272,10 +264,10 @@ function parseQueryClause()
         #####################################
 
         # (1) If there is a list-initial NULL indicator, flag it and strip it from the input stream
-        if [[ $rhs =~ ^-, ]]; then
-            rawToken="-,"
-            rhs=${rhs:2}
-            letter=${rhs:0:1}
+        if [[ $inputStream =~ ^(-,) ]]; then
+            rawToken=${BASH_REMATCH[1]}
+            advanceStream "$inputStream" $rawToken; inputStream=$g_returnString
+            letter=${inputStream:0:1}
         else
             rawToken=""
         fi
@@ -288,16 +280,16 @@ function parseQueryClause()
 
         # (3) Stream "normal" alpha-like string tokens.
         # Grab the first part of the token with respect to quotes and NULL markers
-        elif [[ $rhs =~ ^([[:alpha:]_%][[:alnum:]_%,]*)(.*) ]]; then
+        elif [[ $inputStream =~ ^([[:alpha:]_%][[:alnum:]_%,]*)(.*) ]]; then
             rawToken+=${BASH_REMATCH[1]}     # Use plus-equals to keep the NULL prefix ("-,") if it's there
-            rhs=${BASH_REMATCH[2]}
+            inputStream=${BASH_REMATCH[2]}
 
 #TODO Test single-char tokens, esp. "%" which can be the modulus operator or a single-character SQL regex. We'll assume the latter case holds
-#TODO if and only if either the NCV or its RHS consists solely of "%".
+#TODO if and only if either the NCV or its inputStream consists solely of "%".
 
             # Probe forward across all quoted pieces and embedded NULLs to make sure we have the complete token
-            if [[ ($rhs =~ ^[$eitherQuote]) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
-                letter=${rhs:0:1}
+            if [[ ($inputStream =~ ^[$eitherQuote]) || ($inputStream =~ ^- && $rawToken =~ ,$) ]]; then
+                letter=${inputStream:0:1}
 
                 # The token has additional sub-pieces. Grab the whole token.
                 retrieveFullToken
@@ -318,19 +310,19 @@ function parseQueryClause()
         # we must tokenize differently because commas play a different role. We handle that elsewhere.
 
         # Get the first part consisting of alnums, commas, and regexes only.
-        elif [[ ($funcNestingLevel -eq 0) && $rhs =~ ^([0-9][[:alnum:]%_,]+)(.*) ]]; then
+        elif [[ ($funcNestingLevel -eq 0) && $inputStream =~ ^([0-9][[:alnum:]%_,]+)(.*) ]]; then
             local tmpToken=${BASH_REMATCH[1]}
-            local tmpRhs=${BASH_REMATCH[2]}
+            local tmpStream=${BASH_REMATCH[2]}
 
             # Only proceed if the first part has something non-digital.
             if [[ $tmpToken =~ [^[:digit:]] ]]; then
                 # Strip off the leading part
                 rawToken+=$tmpToken
-                rhs=$tmpRhs
+                inputStream=$tmpStream
 
                 # Probe forward across all quoted or NULL parts to get the complete token
-                if [[ ($rhs =~ ^[$eitherQuote]) || ($rhs =~ ^- && $rawToken =~ ,$) ]]; then
-                    letter=${rhs:0:1}
+                if [[ ($inputStream =~ ^[$eitherQuote]) || ($inputStream =~ ^- && $rawToken =~ ,$) ]]; then
+                    letter=${inputStream:0:1}
 
                     retrieveFullToken
                 fi
@@ -349,34 +341,38 @@ function parseQueryClause()
         fi
 
         # Numeric- and date-like values
-        if [[ $rhs =~ ^([-]?([0-9]*\.)?[0-9]+)(.*) ]]; then      # will capture the leading int or float of numeric/date-like values
-            local oldRhs=$rhs
+        if [[ $inputStream =~ ^([-]?([0-9]*\.)?[0-9]+)(.*) ]]; then      # will capture the leading int or float of numeric/date-like values
+            local oldInputStream=$inputStream
             local value=${BASH_REMATCH[1]}
-            rhs=${BASH_REMATCH[3]}
+            inputStream=${BASH_REMATCH[3]}
 
             # First character beyond the initial number tells us a lot about the full extent of the value
-            local nextChar=${rhs:0:1}
+            local nextChar=${inputStream:0:1}
             local following ending
 
             case $nextChar in
               ,) # function argument or numeric list
                 if ((funcNestingLevel > 0)); then
-                    streamToken ${tt[NUMERIC]}$value; output+=$g_returnString
-                else
-                    [[ $rhs =~ ^$nextChar([-0-9,.]+)(.*) ]]    # NOTE: We could specify more precisely where negative signs may be placed
-                    value+=$nextChar${BASH_REMATCH[1]}
-                    rhs=${BASH_REMATCH[2]}
                     if [[ $value =~ \. ]]; then
-                        streamToken ${tt[FLOATLIST]}$value; output+=$g_returnString
+                        streamToken ${tt[DECIMAL]}$value; outputStream+=$g_returnString
                     else
-                        streamToken ${tt[INTLIST]}$value; output+=$g_returnString
+                        streamToken ${tt[INTEGER]}$value; outputStream+=$g_returnString
+                    fi
+                else
+                    [[ $inputStream =~ ^$nextChar([-0-9,.]+)(.*) ]]    # NOTE: We could specify more precisely where negative signs may be placed
+                    value+=$nextChar${BASH_REMATCH[1]}
+                    inputStream=${BASH_REMATCH[2]}
+                    if [[ $value =~ \. ]]; then
+                        streamToken ${tt[FLOATLIST]}$value; outputStream+=$g_returnString
+                    else
+                        streamToken ${tt[INTLIST]}$value; outputStream+=$g_returnString
                     fi
                 fi
                 ;;
               /) # date, date range, or division operator (TODO timestamps)
                 local followingPart startingDate
                 # First we deal with tokens that begin yyyy/mm/dd
-                if [[ $oldRhs =~ ([0-9]{4}/[0-9]{1,2}/[0-9]{1,2})(.*) ]]; then
+                if [[ $oldInputStream =~ ^([0-9]{4}/[0-9]{1,2}/[0-9]{1,2})(.*) ]]; then
                     # Starts with a full date (yyyy/mm/dd). Discriminate between dates, date ranges and date subtractions
                     startingDate=${BASH_REMATCH[1]}
                     followingPart=${BASH_REMATCH[2]}
@@ -389,12 +385,12 @@ function parseQueryClause()
                         # Grab the numeric-or-date part after the minus sign
                         [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
                         followingPart=${BASH_REMATCH[1]}
-                        rhs=${BASH_REMATCH[2]}
+                        inputStream=${BASH_REMATCH[2]}
 
                         # A slash therein indicates a date range; stream it as such
                         if [[ $followingPart =~ / ]]; then
                             value=$startingDate$followingPart
-                            streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
+                            streamToken ${tt[DATE_RANGE]}$value; outputStream+=$g_returnString
 
                         # No slash; only digits means we must decide: date range or date subtraction?
                         elif [[ $followingPart =~ [0-9] ]]; then
@@ -404,13 +400,13 @@ function parseQueryClause()
                             if ((number2<=31 && number2>number1)); then
                                 # Treat it as a date range
                                 value=$startingDate$followingPart
-                                streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
+                                streamToken ${tt[DATE_RANGE]}$value; outputStream+=$g_returnString
                             else
                                 # Treat it as a date subtraction. Create three tokens.
                                 value=$startingDate
-                                streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
-                                streamToken ${tt[OPERATOR]}-; output+=$g_returnString
-                                streamToken ${tt[STRING_CONSTANT]}$number2; output+=$g_returnString
+                                streamToken ${tt[DATE]}$value; outputStream+=$g_returnString
+                                streamToken ${tt[OPERATOR]}-; outputStream+=$g_returnString
+                                streamToken ${tt[INTEGER]}$number2; outputStream+=$g_returnString
                             fi
                         # other stuff after minus sign --> error
                         else
@@ -420,55 +416,55 @@ function parseQueryClause()
                     else
                         # No trailing minus sign. It's a plain old date.
                         value=$startingDate$followingPart
-                        rhs=$followingPart
-                        streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
+                        inputStream=$followingPart
+                        streamToken ${tt[DATE]}$value; outputStream+=$g_returnString
                     fi
                 # Now we deal with tokens that begin yyyy/mm. We interpret these as either date ranges or arithmetic. (Is that the best way?)
-                elif [[ $oldRhs =~ ([0-9]{4}/[0-9]{1,2})(.*) ]]; then
+                elif [[ $oldInputStream =~ ^([0-9]{4}/[0-9]{1,2})(.*) ]]; then
                     startingDate=${BASH_REMATCH[1]}
                     followingPart=${BASH_REMATCH[2]}
                     if [[ $followingPart =~ ^- ]]; then
                         # Grab the date part after the minus sign
                         [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
                         followingPart=${BASH_REMATCH[1]}
-                        rhs=${BASH_REMATCH[2]}
+                        inputStream=${BASH_REMATCH[2]}
                         value=$startingDate$followingPart
-                        streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
+                        streamToken ${tt[DATE_RANGE]}$value; outputStream+=$g_returnString
                     else
                         # Treat it as arithmetic.
-                        rhs=$followingPart
-                        streamToken ${tt[STRING_CONSTANT]}${startingDate:0:4}; output+=$g_returnString
-                        streamToken ${tt[OPERATOR]}'/'; output+=$g_returnString
-                        streamToken ${tt[STRING_CONSTANT]}${startingDate:5}; output+=$g_returnString
+                        inputStream=$followingPart
+                        streamToken ${tt[INTEGER]}${startingDate:0:4}; outputStream+=$g_returnString
+                        streamToken ${tt[OPERATOR]}'/'; outputStream+=$g_returnString
+                        streamToken ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
                     fi
                 # Finally we deal with other tokens, where the successive runs of digits do NOT suggest a date. We treat it as arithmetic.
                 else
                     # (Merge with the code immediately above!)
-                    rhs=$followingPart
-                    streamToken ${tt[STRING_CONSTANT]}${startingDate:0:4}; output+=$g_returnString
-                    streamToken ${tt[OPERATOR]}'/'; output+=$g_returnString
-                    streamToken ${tt[STRING_CONSTANT]}${startingDate:5}; output+=$g_returnString
+                    inputStream=$followingPart
+                    streamToken ${tt[INTEGER]}${startingDate:0:4}; outputStream+=$g_returnString
+                    streamToken ${tt[OPERATOR]}'/'; outputStream+=$g_returnString
+                    streamToken ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
                 fi
                 # This concludes the '/' processing.
                 ;;
               :) # prefix list
-                 #TODO Accommodate a range set (in the future), whose rhs would be approximately ^:[0-9,:;-]+
-                [[ $rhs =~ ^$nextChar([0-9,]+)(.*) ]]
+                 #TODO Accommodate a range set (in the future), whose inputStream would be approximately ^:[0-9,:;-]+
+                [[ $inputStream =~ ^$nextChar([0-9,]+)(.*) ]]
                 value+=$nextChar${BASH_REMATCH[1]}
-                rhs=${BASH_REMATCH[2]}
-                streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
+                inputStream=${BASH_REMATCH[2]}
+                streamToken ${tt[PREFIX_LIST]}$value; outputStream+=$g_returnString
                 ;;
               -) # date, numeric range or subtraction operator
-                oldRhs=$rhs
+                oldInputStream=$inputStream    # TODO this line should probably be deleted.
                 # Check for a date.
-                if [[ $oldRhs =~ ([0-9]{4}-[0-9]{1,2}-[0-9]{1,2})(.*) ]]; then
+                if [[ $oldInputStream =~ ^([0-9]{4}-[0-9]{1,2}-[0-9]{1,2})(.*) ]]; then
                     value=${BASH_REMATCH[1]}
-                    rhs=${BASH_REMATCH[2]}
-                    streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
+                    inputStream=${BASH_REMATCH[2]}
+                    streamToken ${tt[DATE]}$value; outputStream+=$g_returnString
                 else
                     # Not a date. Either a numeric range or arithmetic.
                     #TODO Recognize solitary NULLs
-                    [[ $rhs =~ ^$nextChar([0-9]*)(.*) ]]
+                    [[ $inputStream =~ ^$nextChar([0-9]*)(.*) ]]
                     following=${BASH_REMATCH[1]}
                     ending=${BASH_REMATCH[2]}
                     if [[ -n $following ]]; then
@@ -476,22 +472,22 @@ function parseQueryClause()
                         # a numeric range is only valid when it occurs as the sole token after a comparator (in the given NCV construct).
                         # We assume that it's not an integer subtraction, by the "Contrapositive of Occam's razor" discussed elsewhere.
                         # The logic: if "nothing ahead, i.e. empty or closeParen" and "comparator-or-nothing behind" ...
-                        if [[ (-z $ending || "$ending" =~ ^\ ?$g_rightParen) && ($output =~ ([\<\>=]|${tt[BEGIN_NCV]}[0-9]+${tokenDelimiter})$) ]]; then
+                        if [[ (-z $ending || "$ending" =~ ^\ ?$g_rightParen) && ($outputStream =~ ([\<\>=]|${tt[BEGIN_NCV]}[0-9]+${tokenDelimiter})$) ]]; then
                             # numeric range
                             value+=$nextChar$following
-                            rhs=$ending
-                            streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
+                            inputStream=$ending
+                            streamToken ${tt[INT_RANGE]}$value; outputStream+=$g_returnString
                         else
                             # arithmetic subtraction     # TODO What about arithmetic negation?
-                            rhs=$following$ending    # remove leading minus sign
-                            streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
-                            streamToken ${tt[OPERATOR]}'-'; output+=$g_returnString
+                            inputStream=$following$ending    # remove leading minus sign
+                            streamToken ${tt[INTEGER]}$value; outputStream+=$g_returnString
+                            streamToken ${tt[OPERATOR]}'-'; outputStream+=$g_returnString
                         fi
                     else
                         # There are no following digits (perhaps a name/word follows)
-                        rhs=$following$ending
-                        streamToken ${tt[STRING_CONSTANT]}$value; output+=$g_returnString
-                        streamToken ${tt[OPERATOR]}'-'; output+=$g_returnString
+                        inputStream=$following$ending
+                        streamToken ${tt[INTEGER]}$value; outputStream+=$g_returnString
+                        streamToken ${tt[OPERATOR]}'-'; outputStream+=$g_returnString
                     fi
                 fi
                 ;;
@@ -502,38 +498,38 @@ function parseQueryClause()
             continue
 
         # '@'-delimited filenames
-        elif [[ $rhs =~ ^@([^@]*)@(.*) ]]; then
+        elif [[ $inputStream =~ ^@([^@]*)@(.*) ]]; then
             fileName=${BASH_REMATCH[1]}
-            rhs=${BASH_REMATCH[2]}
-            streamToken ${tt[FILENAME]}"$fileName"; output+=$g_returnString
+            inputStream=${BASH_REMATCH[2]}
+            streamToken ${tt[FILENAME]}"$fileName"; outputStream+=$g_returnString
             continue
 
         # $-marked variables. The intention: Force them to be expanded to a name.
-        elif [[ "$rhs" =~ ^\$([*a-z][[:alnum:]]*)(.*) ]]; then
+        elif [[ "$inputStream" =~ ^\$([*a-z][[:alnum:]]*)(.*) ]]; then
             local value=${BASH_REMATCH[1]}
-            rhs=${BASH_REMATCH[2]}
-            streamToken ${tt[FORCED_EXPANSION]}$value; output+=$g_returnString
+            inputStream=${BASH_REMATCH[2]}
+            streamToken ${tt[FORCED_EXPANSION]}$value; outputStream+=$g_returnString
             continue
 
         # Single-character operators
         # TODO Make this list exhaustive. Make sure alternate meanings of these characters are ruled out before this point.
         elif [[ $letter =~ [-+*/%^\&|] ]]; then
-            streamToken ${tt[OPERATOR]}$letter; output+=$g_returnString
-            [[ $rhs =~ ^"$letter"(.*) ]]
-            rhs=${BASH_REMATCH[1]}
+            streamToken ${tt[OPERATOR]}$letter; outputStream+=$g_returnString
+            [[ $inputStream =~ ^"$letter"(.*) ]]
+            inputStream=${BASH_REMATCH[1]}
             continue
 
         # Markup spaces with a special descriptor
         elif [[ $letter =~ [\ ] ]]; then
 
             # Advance through the input stream
-            [[ $rhs =~ ^"$letter"(.*) ]]
-            rhs=${BASH_REMATCH[1]}
+            [[ $inputStream =~ ^"$letter"(.*) ]]
+            inputStream=${BASH_REMATCH[1]}
 
             # Normally we stream a space token immediately...
             if [[ -z $g_compoundTokenBuffer ]]; then
                 # Use streamToken() to delimit the space from whatever precedes it. A raw space is incorrect.
-                streamToken ${tt[SPACE]}; output+=$g_returnString
+                streamToken ${tt[SPACE]}; outputStream+=$g_returnString
             # ...but if we are inside a space-containing ("compound") value, we add it raw to the value buffer
             else
                 bufferSpace
@@ -543,9 +539,9 @@ function parseQueryClause()
 
         # Any material not caught by the above is copied raw. TODO Make sure this doesn't happen!
         else
-            output+=$letter
-            [[ $rhs =~ ^"$letter"(.*) ]]
-            rhs=${BASH_REMATCH[1]}
+            outputStream+=$letter
+            [[ $inputStream =~ ^"$letter"(.*) ]]
+            inputStream=${BASH_REMATCH[1]}
             continue
         fi
 
@@ -558,20 +554,36 @@ function parseQueryClause()
 
     # Don't fall off the end of the input without flushing the buffer.
     if [[ -n $g_compoundTokenBuffer ]]; then
-        streamToken; output+=$g_returnString   # Invoke with no arguments to force a buffer flush only.
+        streamToken; outputStream+=$g_returnString   # Invoke with no arguments to force a buffer flush only.
     fi
 
-    g_returnString=$output
+    g_returnString=$outputStream
     return 0
 }
 
 
 ##################################################################################################
+# advanceStream (stream [,count])
+#
+# Advances through a text stream by a fixed number of bytes (defaulting to 1 byte), 
+# or by the length of a specified (non-numeric) string, writing the result to the global buffer.
+##################################################################################################
+function advanceStream()
+{
+    local stream=$1 count=${2:-1}
+    [[ $count =~ ^[[:digit:]]+$ ]] || count=${#count}
+
+    [[ $stream =~ ^.{$count}(.*) ]]
+
+    g_returnString=${BASH_REMATCH[1]}
+}
+
+##################################################################################################
 # processPercentSignToken (token, side, wasLeftModulus)
 #
-# A string consisting of one "%" surrounded by the right kind of text could be parsed as two kinds of operations:
-# either a glob OR a modulus, e.g. "foo%5" could mean either 'foo%5' OR foo % 5. We can tell the difference
-# by whether the string is on the right or left hand side of the current NCV.
+# A string consisting of one "%" surrounded by the right kind of text could be parsed as either of 
+# two kinds of operations: a glob OR a modulus, e.g. "foo%5" could mean either 'foo%5' OR foo % 5.
+# We can tell the difference by whether the string is on the right or left hand side of the current NCV.
 ##################################################################################################
 function processPercentSignToken()
 {
@@ -588,16 +600,16 @@ function processPercentSignToken()
             else
                 tokenType=${tt[STRING_CONSTANT]}
             fi
-            streamToken $tokenType$leftSide; output+=$g_returnString
+            streamToken $tokenType$leftSide; outputStream+=$g_returnString
 
-            streamToken ${tt[OPERATOR]}%; output+=$g_returnString
+            streamToken ${tt[OPERATOR]}%; outputStream+=$g_returnString
 
             if [[ $rightSide =~ ^[\*[:lower:]][[:alnum:]]$ ]]; then
                 tokenType=${tt[EXPANDABLE_WORD]}
             else
                 tokenType=${tt[STRING_CONSTANT]}
             fi
-            streamToken $tokenType$rightSide; output+=$g_returnString
+            streamToken $tokenType$rightSide; outputStream+=$g_returnString
 
             wasLeftModulus=$TRUE
             continue
@@ -723,34 +735,34 @@ function retrieveFullToken()
         # Handle the present "feature" in the token: an embedded NULL indicator, a quoted piece or an orphaned quote character
 
         # Check for embedded NULL
-        if [[ ($rhs =~ ^-) && ($rawToken =~ ,$) ]]; then
+        if [[ ($inputStream =~ ^-) && ($rawToken =~ ,$) ]]; then
             # Append it, leaving the following comma in place if there is one.
             rawToken+="-"
-            rhs=${rhs:1}
+            inputStream=${inputStream:1}
 
         # Check for a quoted literal: match the quote to its companion
-        elif [[ $rhs =~ ^${letter}([^${letter}]*)${letter}(.*) ]]; then
+        elif [[ $inputStream =~ ^${letter}([^${letter}]*)${letter}(.*) ]]; then
             rawToken+=${BASH_REMATCH[1]}    # Strip off the surrounding quotes before tokenizing.
-            rhs=${BASH_REMATCH[2]}
+            inputStream=${BASH_REMATCH[2]}
 
         # Otherwise assume we have an orphaned " or ' character. Peel it off.
         else
             rawToken+=$letter
-            rhs=${rhs:1}
+            inputStream=${inputStream:1}
         fi
 
         # Check the termination conditions
-        if [[ ! $rhs =~ ^[[:alnum:],_%] ]]; then
+        if [[ ! $inputStream =~ ^[[:alnum:],_%] ]]; then
             break
         fi
 
         # If not terminated, advance through the following "featureless" part of the token
-        [[ $rhs =~ ^([[:alnum:],_%]+)(.*) ]]
+        [[ $inputStream =~ ^([[:alnum:],_%]+)(.*) ]]
         rawToken+=${BASH_REMATCH[1]}
-        rhs=${BASH_REMATCH[2]}
+        inputStream=${BASH_REMATCH[2]}
 
         # Check the termination conditions
-        letter=${rhs:0:1}
+        letter=${inputStream:0:1}
         if [[ ! $letter =~ [-${eitherQuote}] ]]; then
             break
         fi
@@ -829,7 +841,7 @@ function streamToken()
         fi
 
         # 2. Append the buffered token.
-        output+=$g_compoundTokenBuffer
+        outputStream+=$g_compoundTokenBuffer
 
         # 3. Empty the buffer
         g_compoundTokenBuffer=""
@@ -837,7 +849,7 @@ function streamToken()
 
         # 4. If required by step 1, add a space token to the stream.
         if ((needTrailingSpace)); then
-            streamToken ${tt[SPACE]}; output+=$g_returnString
+            streamToken ${tt[SPACE]}; outputStream+=$g_returnString
             g_returnString=""
         fi
     fi

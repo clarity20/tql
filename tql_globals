@@ -21,12 +21,15 @@ tt=(
     [DATE_RANGE]='d'
     [FORCED_EXPANSION]='E'    # An expandable word that the user has marked with the variable indicator
     [FUNCTION]='F'
+    [DECIMAL]='f' [FLOAT]='f' # Let DECIMAL and FLOAT be synonyms
+    [INTEGER]='I'
     [INT_RANGE]='i'
     [FLOAT_LIST]='L'
     [INT_LIST]='l'
     [NUMERIC]='N'
     [BEGIN_NCV]='n'
     [OPERATOR]='O'
+    [PREFIX_LIST]='P'
     [REGEX_LIST]='R'
     [SPACE]='S'             # distinguishes cosmetic spaces from spaces inside other tokens
     [STRING_CONSTANT]='V'
