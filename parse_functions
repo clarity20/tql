@@ -498,16 +498,16 @@ function parseQueryClause()
             continue
 
         # '@'-delimited filenames
-        elif [[ $inputStream =~ ^@([^@]*)@(.*) ]]; then
+        elif [[ $inputStream =~ ^@([^@]*)@ ]]; then
             fileName=${BASH_REMATCH[1]}
-            inputStream=${BASH_REMATCH[2]}
+            advanceStream "$inputStream" "@"$fileName"@"; inputStream=$g_returnString
             streamToken ${tt[FILENAME]}"$fileName"; outputStream+=$g_returnString
             continue
 
         # $-marked variables. The intention: Force them to be expanded to a name.
         elif [[ "$inputStream" =~ ^\$([*a-z][[:alnum:]]*)(.*) ]]; then
             local value=${BASH_REMATCH[1]}
-            inputStream=${BASH_REMATCH[2]}
+            advanceStream "$inputStream" "\$$value"; inputStream=$g_returnString
             streamToken ${tt[FORCED_EXPANSION]}$value; outputStream+=$g_returnString
             continue
 
@@ -515,20 +515,18 @@ function parseQueryClause()
         # TODO Make this list exhaustive. Make sure alternate meanings of these characters are ruled out before this point.
         elif [[ $letter =~ [-+*/%^\&|] ]]; then
             streamToken ${tt[OPERATOR]}$letter; outputStream+=$g_returnString
-            [[ $inputStream =~ ^"$letter"(.*) ]]
-            inputStream=${BASH_REMATCH[1]}
+            advanceStream "$inputStream"; inputStream=$g_returnString
             continue
 
         # Markup spaces with a special descriptor
         elif [[ $letter =~ [\ ] ]]; then
 
             # Advance through the input stream
-            [[ $inputStream =~ ^"$letter"(.*) ]]
-            inputStream=${BASH_REMATCH[1]}
+            advanceStream "$inputStream"; inputStream=$g_returnString
 
             # Normally we stream a space token immediately...
             if [[ -z $g_compoundTokenBuffer ]]; then
-                # Use streamToken() to delimit the space from whatever precedes it. A raw space is incorrect.
+                # Use streamToken() to delimit the space from whatever precedes it
                 streamToken ${tt[SPACE]}; outputStream+=$g_returnString
             # ...but if we are inside a space-containing ("compound") value, we add it raw to the value buffer
             else
@@ -540,8 +538,7 @@ function parseQueryClause()
         # Any material not caught by the above is copied raw. TODO Make sure this doesn't happen!
         else
             outputStream+=$letter
-            [[ $inputStream =~ ^"$letter"(.*) ]]
-            inputStream=${BASH_REMATCH[1]}
+            advanceStream "$inputStream"; inputStream=$g_returnString
             continue
         fi
 
