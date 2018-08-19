@@ -360,14 +360,6 @@ arg="a=b";      testSingle $arg ${tt[EXPANDABLE_WORD]} a ${tt[COMPARATOR]} "=" $
 # Comparators, multiple NCVs with token counting
 arg="(a=2)&&(zeta=10)"; testSubclause "$arg" "(" { W a C "=" N 2 } ")" '&&' "(" { W zeta C "=" N "10" } ")"
 
-##############
-##############
-##############
-fi  # if ((0/1)) guard
-##############
-##############
-##############
-
 # Preprocessor-phase NCV detection
 input="(d=5)&&(<=7||(a&&b))"
 expected="(${tokenDelimiter}\
@@ -378,7 +370,7 @@ ${tt[END_CV]}2||(${tokenDelimiter}\
 ${tt[BEGIN_NCV]}3a${tokenDelimiter}\
 ${tt[END_V]}3&&${tokenDelimiter}\
 ${tt[BEGIN_NCV]}4b${tokenDelimiter}\
-${tt[END_V]}4))" 
+${tt[END_V]}4))"
 
 delimitNCVsInString "$input"
 if [[ "$g_returnString" != "$expected" ]]; then
@@ -386,17 +378,27 @@ if [[ "$g_returnString" != "$expected" ]]; then
     exit 1
 fi
 
-# Percent as glob and as modulus
-arg="123%St"
-testSingle $arg ${tt[STRING_CONSTANT]} "$arg"
+# Percent sign as glob and as modulus
+arg="street=123%St"
+testSingle "$arg" ${tt[EXPANDABLE_WORD]} street ${tt[COMPARATOR]} "=" ${tt[STRING_CONSTANT]} "123%St"
+arg="123%st=2"
+testSingle "$arg" ${tt[INTEGER]} 123 ${tt[OPERATOR]} "%" ${tt[EXPANDABLE_WORD]} st
 
-# Add a percent-initial regex test
-
-exit $?
+# TODO Add a percent-initial regex test
 
 # Different types of numeric and date values
-arg="123";     testSingle $arg N $arg    # integer
-arg="123.45";     testSingle $arg D $arg    # decimal
+arg="123";     testSingle $arg ${tt[INTEGER]} 123    # integer
+arg="123.45";     testSingle $arg ${tt[DECIMAL]} 123.45    # decimal
+
+##############
+##############
+##############
+fi  # if ((0/1)) guard
+##############
+##############
+##############
+
+exit $?
 
 # Different types of lists: regex, alnum, numeric
 

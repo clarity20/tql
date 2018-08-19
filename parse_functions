@@ -73,13 +73,13 @@ function parseQueryClause()
                     else
                         currentSide=$RIGHT_SIDE
                     fi
-                    tokensInNCV=0
                     wasLeftSideModulus=$FALSE
 
                     # Copy the NCV delimiter token to the output stream
                     streamToken $nextLetter${inputStream:2:1}; outputStream+=$g_returnString
                     # Advance the input stream past this token
                     advanceStream "$inputStream" 3; inputStream=$g_returnString
+                    tokensInNCV=0
                     ;;
                 [${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])
                     currentNcvType=""
@@ -492,7 +492,7 @@ function parseQueryClause()
                 fi
                 ;;
               *) # Anything else means it is a single int or float. Buffer it because it could turn out to be a "123 Main St".
-                bufferToken "$value" ${tt[NUMERIC]} 
+                bufferToken "$value" ${tt[NUMERIC]}
                 ;;
             esac
             continue
@@ -562,7 +562,7 @@ function parseQueryClause()
 ##################################################################################################
 # advanceStream (stream [,count])
 #
-# Advances through a text stream by a fixed number of bytes (defaulting to 1 byte), 
+# Advances through a text stream by a fixed number of bytes (defaulting to 1 byte),
 # or by the length of a specified (non-numeric) string, writing the result to the global buffer.
 ##################################################################################################
 function advanceStream()
@@ -578,7 +578,7 @@ function advanceStream()
 ##################################################################################################
 # processPercentSignToken (token, side, wasLeftModulus)
 #
-# A string consisting of one "%" surrounded by the right kind of text could be parsed as either of 
+# A string consisting of one "%" surrounded by the right kind of text could be parsed as either of
 # two kinds of operations: a glob OR a modulus, e.g. "foo%5" could mean either 'foo%5' OR foo % 5.
 # We can tell the difference by whether the string is on the right or left hand side of the current NCV.
 ##################################################################################################
@@ -590,7 +590,7 @@ function processPercentSignToken()
         local rightSide=${BASH_REMATCH[2]}
         local tokenType
 
-        if [[ $side == $LEFT_SIDE || $wasLeftModulus ]]; then
+        if [[ $side == $LEFT_SIDE || $wasLeftModulus == $TRUE ]]; then
             # Interpret as 3 tokens: the left side, % as modulus operator, and the right side
             if [[ $leftSide =~ ^[\*[:lower:]][[:alnum:]]*$ ]]; then
                 tokenType=${tt[EXPANDABLE_WORD]}
@@ -601,7 +601,7 @@ function processPercentSignToken()
 
             streamToken ${tt[OPERATOR]}%; outputStream+=$g_returnString
 
-            if [[ $rightSide =~ ^[\*[:lower:]][[:alnum:]]$ ]]; then
+            if [[ $rightSide =~ ^[\*[:lower:]][[:alnum:]]*$ ]]; then
                 tokenType=${tt[EXPANDABLE_WORD]}
             else
                 tokenType=${tt[STRING_CONSTANT]}
@@ -609,11 +609,9 @@ function processPercentSignToken()
             streamToken $tokenType$rightSide; outputStream+=$g_returnString
 
             wasLeftModulus=$TRUE
-            continue
         else
             # Interpret the % sign as the globbing operator and stream the entire rawToken as a single token.
             bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
-            continue
         fi
     fi
 
@@ -623,7 +621,7 @@ function processPercentSignToken()
 
 ####################################################################################
 # delimitNCVsInString (string)
-# 
+#
 # Insert NCV delimiter markers in the data stream which also indicate the type of NCV,
 # namely NCV, CV or V.
 ####################################################################################
@@ -655,7 +653,7 @@ function delimitNCVsInString()
             else
                 ((parenBalance--))
             fi
-        done 
+        done
 
         # Trim the working NCV to achieve parenthesis balance
         workNCV2=$workNCV    # fetch the unaltered NCV
@@ -851,13 +849,17 @@ function streamToken()
         fi
     fi
 
-    # Append the supplied token(s) to the stream and do some bookkeeping
+    # Append the supplied token(s) to the stream
     while [[ -n $1 ]]; do
-        g_prevToken=$g_currToken
-        g_currToken=$1
-        g_returnString+=$tokenDelimiter$tokensInNCV$1
-        if [[ -n $tokensInNCV ]]; then
-            ((tokensInNCV++))
+        if [[ $1 == ${tt[SPACE]} ]]; then
+            # Spaces: Omit the token counter and do not increment it
+            g_returnString+=$tokenDelimiter$1
+        else
+            # Everything else: Include and increment the token counter if it is set
+            g_returnString+=$tokenDelimiter$tokensInNCV$1
+            if [[ -n $tokensInNCV ]]; then
+                ((tokensInNCV++))
+            fi
         fi
         shift
     done
