@@ -65,7 +65,7 @@ function parseQueryClause()
         if [[ $letter == $tokenDelimiter ]]; then
             case $nextLetter in
                 ${tt[BEGIN_NCV]})
-                    # Determine the NCV type and the expression side and begin counting tokens
+                    # Determine the NCV type and the expression side
                     [[ $inputStream =~ ${tokenDelimiter}([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}]) ]]
                     currentNcvType=${BASH_REMATCH[1]}
                     if [[ "$currentNcvType" == "${tt[END_NCV]}" ]]; then
@@ -79,15 +79,16 @@ function parseQueryClause()
                     streamToken $nextLetter${inputStream:2:1}; outputStream+=$g_returnString
                     # Advance the input stream past this token
                     advanceStream "$inputStream" 3; inputStream=$g_returnString
+
+                    # Begin counting tokens
                     tokensInNCV=0
                     ;;
                 [${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])
                     currentNcvType=""
                     currentSide=""
-                    tokensInNCV=""
-
                     streamToken $nextLetter${inputStream:2:1}; outputStream+=$g_returnString
                     advanceStream "$inputStream" 3; inputStream=$g_returnString
+                    tokensInNCV=""
                     ;;
                 ${tt[SPACE]})
                     streamToken $nextLetter; outputStream+=$g_returnString
@@ -323,7 +324,6 @@ function parseQueryClause()
                 # Probe forward across all quoted or NULL parts to get the complete token
                 if [[ ($inputStream =~ ^[$eitherQuote]) || ($inputStream =~ ^- && $rawToken =~ ,$) ]]; then
                     letter=${inputStream:0:1}
-
                     retrieveFullToken
                 fi
 
@@ -404,9 +404,7 @@ function parseQueryClause()
                             else
                                 # Treat it as a date subtraction. Create three tokens.
                                 value=$startingDate
-                                streamToken ${tt[DATE]}$value; outputStream+=$g_returnString
-                                streamToken ${tt[OPERATOR]}-; outputStream+=$g_returnString
-                                streamToken ${tt[INTEGER]}$number2; outputStream+=$g_returnString
+                                streamToken ${tt[DATE]}$value ${tt[OPERATOR]}- ${tt[INTEGER]}$number2; outputStream+=$g_returnString
                             fi
                         # other stuff after minus sign --> error
                         else
@@ -433,17 +431,13 @@ function parseQueryClause()
                     else
                         # Treat it as arithmetic.
                         inputStream=$followingPart
-                        streamToken ${tt[INTEGER]}${startingDate:0:4}; outputStream+=$g_returnString
-                        streamToken ${tt[OPERATOR]}'/'; outputStream+=$g_returnString
-                        streamToken ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
+                        streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}'/' ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
                     fi
                 # Finally we deal with other tokens, where the successive runs of digits do NOT suggest a date. We treat it as arithmetic.
                 else
                     # (Merge with the code immediately above!)
                     inputStream=$followingPart
-                    streamToken ${tt[INTEGER]}${startingDate:0:4}; outputStream+=$g_returnString
-                    streamToken ${tt[OPERATOR]}'/'; outputStream+=$g_returnString
-                    streamToken ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
+                    streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}'/' ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
                 fi
                 # This concludes the '/' processing.
                 ;;
@@ -455,7 +449,7 @@ function parseQueryClause()
                 streamToken ${tt[PREFIX_LIST]}$value; outputStream+=$g_returnString
                 ;;
               -) # date, numeric range or subtraction operator
-                oldInputStream=$inputStream    # TODO this line should probably be deleted.
+                oldInputStream=$inputStream
                 # Check for a date.
                 if [[ $oldInputStream =~ ^([0-9]{4}-[0-9]{1,2}-[0-9]{1,2})(.*) ]]; then
                     value=${BASH_REMATCH[1]}
@@ -480,19 +474,21 @@ function parseQueryClause()
                         else
                             # arithmetic subtraction     # TODO What about arithmetic negation?
                             inputStream=$following$ending    # remove leading minus sign
-                            streamToken ${tt[INTEGER]}$value; outputStream+=$g_returnString
-                            streamToken ${tt[OPERATOR]}'-'; outputStream+=$g_returnString
+                            streamToken ${tt[INTEGER]}$value ${tt[OPERATOR]}'-'; outputStream+=$g_returnString
                         fi
                     else
                         # There are no following digits (perhaps a name/word follows)
                         inputStream=$following$ending
-                        streamToken ${tt[INTEGER]}$value; outputStream+=$g_returnString
-                        streamToken ${tt[OPERATOR]}'-'; outputStream+=$g_returnString
+                        streamToken ${tt[INTEGER]}$value ${tt[OPERATOR]}'-'; outputStream+=$g_returnString
                     fi
                 fi
                 ;;
               *) # Anything else means it is a single int or float. Buffer it because it could turn out to be a "123 Main St".
-                bufferToken "$value" ${tt[NUMERIC]}
+                if [[ $value =~ \. ]]; then
+                    bufferToken "$value" ${tt[DECIMAL]}
+                else
+                    bufferToken "$value" ${tt[INTEGER]}
+                fi
                 ;;
             esac
             continue
@@ -505,7 +501,7 @@ function parseQueryClause()
             continue
 
         # $-marked variables. The intention: Force them to be expanded to a name.
-        elif [[ "$inputStream" =~ ^\$([*a-z][[:alnum:]]*)(.*) ]]; then
+        elif [[ "$inputStream" =~ ^\$([*a-z][[:alnum:]]*) ]]; then
             local value=${BASH_REMATCH[1]}
             advanceStream "$inputStream" "\$$value"; inputStream=$g_returnString
             streamToken ${tt[FORCED_EXPANSION]}$value; outputStream+=$g_returnString
@@ -694,7 +690,7 @@ function delimitNCVsInString()
 
         # Select the NCV-ending delimiter for the NCV type
         local ncvType
-        if [[ ! "$workNCV2" =~ ([^=\<\!\>]*)([=\<\!\>]+)(.*) ]]; then
+        if [[ ! "$workNCV2" =~ ([^=\<\!\>]*)[=\<\!\>]+ ]]; then
             # Match failed because there is no comparator
             ncvType=${tt[END_V]}
         elif [[ -n ${BASH_REMATCH[1]} ]]; then
@@ -855,11 +851,11 @@ function streamToken()
             # Spaces: Omit the token counter and do not increment it
             g_returnString+=$tokenDelimiter$1
         else
-            # Everything else: Include and increment the token counter if it is set
-            g_returnString+=$tokenDelimiter$tokensInNCV$1
+            # Everything else: Increment and include the token counter if it is set
             if [[ -n $tokensInNCV ]]; then
                 ((tokensInNCV++))
             fi
+            g_returnString+=$tokenDelimiter$tokensInNCV$1
         fi
         shift
     done
@@ -890,7 +886,7 @@ function bufferToken()
     # If the buffer is empty, just set the token type
     if [[ -z $g_compoundTokenBuffer ]]; then
         g_compoundTokenType=$newTokenType
-        : ${tokensInNCV:=0}
+        : ${tokensInNCV:=1}
         g_compoundTokenBuffer=${tokenDelimiter}${tokensInNCV}$newTokenType
         ((tokensInNCV++))
 

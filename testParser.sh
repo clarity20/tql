@@ -398,6 +398,9 @@ fi  # if ((0/1)) guard
 ##############
 ##############
 
+arg="100-x"
+testSingle $arg ${tt[DECIMAL]} 100 ${tt[OPERATOR]} "-" ${tt[EXPANDABLE_WORD]} x
+
 exit $?
 
 # Different types of lists: regex, alnum, numeric
