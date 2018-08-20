@@ -88,7 +88,7 @@ function parseQueryClause()
                     currentSide=""
                     # Copy the NCV terminator token to the output with the final token count
                     streamToken $nextLetter$tokensInNCV; outputStream+=$g_returnString
-                    advanceStream "$inputStream" $nextLetter$tokensInNCV; inputStream=$g_returnString
+                    advanceStream "$inputStream" 3; inputStream=$g_returnString
                     tokensInNCV=""
                     ;;
                 ${tt[SPACE]})
