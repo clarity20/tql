@@ -120,7 +120,7 @@ function parseQueryClause()
                 streamToken ${tt[BEGIN_GROUP]}$globalNestingLevel; outputStream+=$g_returnString
             fi
 
-            advanceStream "$inputStream;" inputStream=$g_rightParen
+            advanceStream "$inputStream"; inputStream=$g_rightParen
             continue
 
         elif [[ $letter =~ $g_rightParen ]]; then
