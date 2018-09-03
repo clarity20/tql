@@ -1425,10 +1425,10 @@ function generateWhereClause()
     dftAlnumCodes=($g_defaultAlnumCodes)
     IFS="$OLDFS"
 
-    # This function receives a sequence of raw NCV expressions and produces the corresponding WHERE clause,
-    # which is a sequence of processed NCV expressions joined together by the correct boolean conjunctions.
-    # Our plan of attack is to separate the raw NCVs, call a couple of processing functions on each one
-    # to generate the processed NCVs, and then to determine and provide the correct conjunctions.
+    # This function receives a sequence of WHERE-clause-like arguments and produces the
+    # corresponding WHERE-clause SQL. Each argument takes the form of a boolean combination of
+    # NCV expressions. Our plan of attack is to separate them into individual NCVs, call some
+    # processing functions on each one, and then link them back together with the right booleans.
 
     # Set the highest-level conjunction, defaulting to AND.
     isOptionOn 'o|or' $OPTIONS
@@ -1448,7 +1448,7 @@ function generateWhereClause()
     # Handle each argument in turn
     while [[ -n $1 ]]; do
 
-        # Lexically analyze the argument, decorating the result with suitable markup
+        # Parse and lexically analyze the argument
         parseQueryClause "$1" $TRUE; parsedStr=$g_returnString
 
         # Prepare to walk the lexed argument forward
@@ -1461,22 +1461,23 @@ function generateWhereClause()
 
             # Pull the next NCV or boolean or parenthetical token from the parsed string
 
-            # TODO Will everything besides spaces necessarily be tokenized? We assume so for now...
-            # Handle uncontained spaces
-            if [[ $rhs =~ ^\ (.*) ]]; then
+            # (Gently) handle space markers
+            if [[ $rhs =~ ^$tokenDelimiter${tt[SPACE]} ]]; then
                 sql+=" "
-                rhs=${BASH_REMATCH[1]}
+                advanceStream "$rhs" 2; rhs=$g_returnString
                 continue
-            fi
 
-            # NCV expressions
-            if [[ $rhs =~ ^${tokenDelimiter}NCV([0-9]+) ]]; then
+            # NCV expression delimiters
+            elif [[ $rhs =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}([0-9]+) ]]; then
                 ncvCounter=${BASH_REMATCH[1]}
+                advanceStream "$rhs" ${BASH_REMATCH[0]}; rhs=$g_returnString
 
-                [[ $rhs =~ ^${BASH_REMATCH[0]}(${tokenDelimiter}.*)$tokenDelimiter/([NC]*V)$ncvCounter(${tokenDelimiter}.*)?$ ]]
+                # Retrieve the end delimiter
+                [[ $rhs =~ ^(${tokenDelimiter}[^$tokenDelimiter]*)$tokenDelimiter([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])([0-9]+) ]]
                 ncv=${BASH_REMATCH[1]}
                 ncvType=${BASH_REMATCH[2]}
-                rhs=${BASH_REMATCH[3]}
+                tokenCount=${BASH_REMATCH[3]}
+                advanceStream "$rhs" ${BASH_REMATCH[0]}; rhs=$g_returnString
 
                 # "Clean up" the NCV. Open with "(" or "NOT (" as appropriate.
                 normalizeNCVConstruct $ncvType "$ncv"; _wheres_bIsNameGiven=$?
@@ -1492,37 +1493,28 @@ function generateWhereClause()
                 sql+=')'   # Needed for complex NCVs like regex lists; superfluous for simple ones
                 continue
 
-            # Left parentheses
-            elif [[ $rhs =~ ^$tokenDelimiter$g_leftParen([0-9]+)(${tokenDelimiter}.*)?$ ]]; then
+            # Left grouping parentheses. Since we are at NCV level, there will be no token counter.
+            elif [[ $rhs =~ ^$tokenDelimiter${tt[BEGIN_GROUP]}([0-9]+) ]]; then
                 sql+="("
-                nestingLevel=${BASH_REMATCH[1]}      # not used yet, but maybe some day
-                rhs=${BASH_REMATCH[2]}
+                nestingLevel=${BASH_REMATCH[1]}
+                advanceStream "$rhs" "${BASH_REMATCH[0]}"; rhs=$g_returnString
                 continue
 
-            # Right parentheses
-            elif [[ $rhs =~ ^$tokenDelimiter$g_rightParen([0-9]+)(${tokenDelimiter}.*)?$ ]]; then
+            # Right grouping parentheses
+            elif [[ $rhs =~ ^$tokenDelimiter${tt[END_GROUP]}([0-9]+) ]]; then
                 sql+=")"
                 nestingLevel=${BASH_REMATCH[1]}
-                rhs=${BASH_REMATCH[2]}
+                advanceStream "$rhs" "${BASH_REMATCH[0]}"; rhs=$g_returnString
                 continue
-            fi
 
             # Logical operators
-            if [[ $rhs =~ ^${tokenDelimiter}B'&'(${tokenDelimiter}.*) ]]; then
+            elif [[ $rhs =~ ^${tokenDelimiter}${tt[BOOLEAN]}'&' ]]; then
                 sql+=" AND"
-                rhs=${BASH_REMATCH[1]}
+                advanceStream "$rhs" "${BASH_REMATCH[0]}"; rhs=$g_returnString
                 continue
-            elif [[ $rhs =~ ^${tokenDelimiter}B'|'(${tokenDelimiter}.*) ]]; then
+            elif [[ $rhs =~ ^${tokenDelimiter}${tt[BOOLEAN]}'|' ]]; then
                 sql+=" OR"
-                rhs=${BASH_REMATCH[1]}
-                continue
-            fi
-
-            # Uncontained/unbound literals
-            #if [[ $rhs =~ ^[\"\'] ]]; then
-            if [[ $rhs =~ ^${tokenDelimiter}L([^$tokenDelimiter]+)L${tokenDelimiter}(.*) ]]; then
-                sql+=${BASH_REMATCH[1]}    # append the quoted literal
-                rhs=${BASH_REMATCH[2]}
+                advanceStream "$rhs" "${BASH_REMATCH[0]}"; rhs=$g_returnString
                 continue
             fi
 
