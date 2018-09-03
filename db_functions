@@ -361,6 +361,7 @@ function assembleSelectClause()
     selectClause+=$postselects
 
 #MMMM Temp fix: strip out all of the markup tags, leaving a pure SELECT clause
+#MMMM This means the delims, token counts and type indicators. (But for NCV delims there are no counts.)
     selectClause=${selectClause//$tokenDelimiter?/}
 
     g_returnString=$selectClause
@@ -400,11 +401,12 @@ function expandSelections()
         #TODO before we prune them down through semantic analysis of the parse tree.
         #TODO Right now, we are rolling out the architecture that enables us to accumulate them.
         expandedSelection=""
-        while [[ $currentSelection =~ $tokenDelimiter([$expandableTypes])([^$tokenDelimiter]+)(${tokenDelimiter}.*|$) ]]; do
-            expansionType=${BASH_REMATCH[1]}
-            currentAbbr=${BASH_REMATCH[2]}
+        while [[ $currentSelection =~ ($tokenDelimiter[0-9]+)([$expandableTypes])([^$tokenDelimiter]+)(${tokenDelimiter}.*|$) ]]; do
+            tokenPrefix=${BASH_REMATCH[1]}
+            expansionType=${BASH_REMATCH[2]}
+            currentAbbr=${BASH_REMATCH[3]}
             unexpandablePrefix=${currentSelect%${BASH_REMATCH[0]}}
-            currentSelection=${BASH_REMATCH[3]}
+            currentSelection=${BASH_REMATCH[4]}
 
             case $expansionType in
                 ${tt[EXPANDABLE_WORD]})
@@ -424,7 +426,7 @@ function expandSelections()
             esac
 
             # Piece together the expanded string
-            expandedSelection+=$unexpandablePrefix$tokenDelimiter$expansionType$expandedName
+            expandedSelection+=$unexpandablePrefix$tokenPrefix$expansionType$expandedName
         done
 
         # The selection is fully expanded. If there is a trailing literal piece, attach it

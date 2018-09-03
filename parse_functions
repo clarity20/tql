@@ -187,6 +187,10 @@ function parseQueryClause()
         # Mark commas as argument delimiters if we are inside a function call or we are not in WHERE-clause mode.
         # In other situations commas are list-item delimiters and should not be marked at all.
         elif [[ $letter == , && ($funcNestingLevel -gt 0 || $isWhereClause == $FALSE) ]]; then
+            # Argument-delimiting commas in non-WHERE clauses should reset the token count
+            if [[ $funcNestingLevel -eq 0 && $isWhereClause == $FALSE ]]; then
+                tokensInNCV=""
+            fi
             streamToken ${tt[DELIMITER]}$globalNestingLevel; outputStream+=$g_returnString
             advanceStream "$inputStream"; inputStream=$g_returnString
             continue
@@ -887,9 +891,9 @@ function bufferToken()
     # If the buffer is empty, just set the token type
     if [[ -z $g_compoundTokenBuffer ]]; then
         g_compoundTokenType=$newTokenType
-        : ${tokensInNCV:=1}
-        g_compoundTokenBuffer=${tokenDelimiter}${tokensInNCV}$newTokenType
+        : ${tokensInNCV:=0}
         ((tokensInNCV++))
+        g_compoundTokenBuffer=${tokenDelimiter}${tokensInNCV}$newTokenType
 
     # If the buffer is not empty, the fact that we've returned to this code proves the token is compound.
     # We carefully update our guess as to the token type.
