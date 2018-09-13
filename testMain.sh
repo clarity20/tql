@@ -7,7 +7,7 @@ source $TQL_HOME/parse_functions
 # Populate the master column list
 TQL_SCHEMA_CACHE=$TQL_HOME/testTableData.dat
 loadTableDescription $TQL_SCHEMA_CACHE
-echo "$g_masterColumnList"
+#echo "$g_masterColumnList"
 
 _preselects=fa
 expandSelections $_preselects
@@ -27,3 +27,6 @@ _preselects=2*fr+ft/3
 expandSelections $_preselects
 echo "$_preselects" expanded to "$g_returnString"
 
+_preselects=cTI
+expandSelections $_preselects
+echo "$_preselects" expanded to "$g_returnString"
