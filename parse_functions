@@ -26,7 +26,8 @@ g_compoundTokenType=
 g_compoundTokenBuffer=
 
 ####################################################################################
-# The parsing/lexing routine for query clauses and clause pieces
+# parseQueryClause (tqlClause [,isWhereClause = FALSE])
+# Main entry point for the parsing/lexing of TQL clauses and clause pieces
 ####################################################################################
 function parseQueryClause()
 {
@@ -166,13 +167,13 @@ function parseQueryClause()
 
             # Tokenize and stream the operator or comparator.
             if [[ $comp == '<<' || $comp == '>>' ]]; then
-                streamToken ${tt[OPERATOR]}$comp; outputStream+=$g_returnString
+                streamToken ${tt[OPERATOR]}${globalNestingLevel}$comp; outputStream+=$g_returnString
                 continue
             else
                 # Some lexical analysis: note the transition to the right-hand side of the NCV expression
                 currentSide=$RIGHT_SIDE
 
-                streamToken ${tt[COMPARATOR]}$comp; outputStream+=$g_returnString
+                streamToken ${tt[COMPARATOR]}${globalNestingLevel}$comp; outputStream+=$g_returnString
                 continue
             fi
 
@@ -236,11 +237,12 @@ function parseQueryClause()
             # then process the word as a true word
             if [[ ! $nextChar =~ $nonwordExtenders ]]; then
 
+
                 # If the word begins with a "*", it is a true word only when the "*" is preceded by another operator
                 # or by certain other special characters. Otherwise it is the "times" operator. If it turns out to be
                 # the latter, we dump the "*" to the outputStream and continue the main token processing loop
                 if [[ ($letter == '*') && -n "$previousLetter" && (! "+-*/ (&|" =~ "$previousLetter") ]]; then
-                    streamToken ${tt[OPERATOR]}$letter; outputStream+=$g_returnString
+                    streamToken ${tt[OPERATOR]}${globalNestingLevel}$letter; outputStream+=$g_returnString
                     advanceStream "$inputStream"; inputStream=$g_returnString
                     continue
 
@@ -409,7 +411,7 @@ function parseQueryClause()
                             else
                                 # Treat it as a date subtraction. Create three tokens.
                                 value=$startingDate
-                                streamToken ${tt[DATE]}$value ${tt[OPERATOR]}- ${tt[INTEGER]}$number2; outputStream+=$g_returnString
+                                streamToken ${tt[DATE]}$value ${tt[OPERATOR]}${globalNestingLevel}- ${tt[INTEGER]}$number2; outputStream+=$g_returnString
                             fi
                         # other stuff after minus sign --> error
                         else
@@ -436,13 +438,13 @@ function parseQueryClause()
                     else
                         # Treat it as arithmetic.
                         inputStream=$followingPart
-                        streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}'/' ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
+                        streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}${globalNestingLevel}'/' ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
                     fi
                 # Finally we deal with other tokens, where the successive runs of digits do NOT suggest a date. We treat it as arithmetic.
                 else
                     # (Merge with the code immediately above!)
                     inputStream=$followingPart
-                    streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}'/' ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
+                    streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}${globalNestingLevel}'/' ${tt[INTEGER]}${startingDate:5}; outputStream+=$g_returnString
                 fi
                 # This concludes the '/' processing.
                 ;;
@@ -479,12 +481,12 @@ function parseQueryClause()
                         else
                             # arithmetic subtraction     # TODO What about arithmetic negation?
                             inputStream=$following$ending    # remove leading minus sign
-                            streamToken ${tt[INTEGER]}$value ${tt[OPERATOR]}'-'; outputStream+=$g_returnString
+                            streamToken ${tt[INTEGER]}$value ${tt[OPERATOR]}${globalNestingLevel}'-'; outputStream+=$g_returnString
                         fi
                     else
                         # There are no following digits (perhaps a name/word follows)
                         inputStream=$following$ending
-                        streamToken ${tt[INTEGER]}$value ${tt[OPERATOR]}'-'; outputStream+=$g_returnString
+                        streamToken ${tt[INTEGER]}$value ${tt[OPERATOR]}${globalNestingLevel}'-'; outputStream+=$g_returnString
                     fi
                 fi
                 ;;
@@ -515,7 +517,7 @@ function parseQueryClause()
         # Single-character operators
         # TODO Make this list exhaustive. Make sure alternate meanings of these characters are ruled out before this point.
         elif [[ $letter =~ [-+*/%^\&|] ]]; then
-            streamToken ${tt[OPERATOR]}$letter; outputStream+=$g_returnString
+            streamToken ${tt[OPERATOR]}${globalNestingLevel}$letter; outputStream+=$g_returnString
             advanceStream "$inputStream"; inputStream=$g_returnString
             continue
 
@@ -600,7 +602,7 @@ function processPercentSignToken()
             fi
             streamToken $tokenType$leftSide; outputStream+=$g_returnString
 
-            streamToken ${tt[OPERATOR]}%; outputStream+=$g_returnString
+            streamToken ${tt[OPERATOR]}${globalNestingLevel}%; outputStream+=$g_returnString
 
             if [[ $rightSide =~ ^[\*[:lower:]][[:alnum:]]*$ ]]; then
                 tokenType=${tt[EXPANDABLE_WORD]}

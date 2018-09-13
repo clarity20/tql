@@ -1579,7 +1579,7 @@ function normalizeNCVConstruct()
 #TODO In the future, sthg like RHS/LHS would be better names than name & value because of their broader generality.
 #TODO Just avoid shadowing the "rhs" we use in the caller.
 
-    if [[ $2 =~ (.*)${tokenDelimiter}[0-9]+${tt[COMPARATOR]}([=\<\!\>]+)(.*) ]]; then
+    if [[ $2 =~ (.*)${tokenDelimiter}[0-9]+${tt[COMPARATOR]}[0-9]+([=\<\!\>]+)(.*) ]]; then
         name=${BASH_REMATCH[1]}
         comparator=${BASH_REMATCH[2]}
         value=${BASH_REMATCH[3]}
