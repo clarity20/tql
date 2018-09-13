@@ -405,7 +405,7 @@ function expandSelections()
             tokenPrefix=${BASH_REMATCH[1]}
             expansionType=${BASH_REMATCH[2]}
             currentAbbr=${BASH_REMATCH[3]}
-            unexpandablePrefix=${currentSelect%${BASH_REMATCH[0]}}
+            unexpandablePrefix=${currentSelection%${BASH_REMATCH[0]}}
             currentSelection=${BASH_REMATCH[4]}
 
             case $expansionType in
@@ -826,7 +826,12 @@ function expandAbbreviatedName()
 
             # Identify non-exact matches which match exactly at the word boundaries (denoted by capital letters).
             # This is our criterion when there are no perfect matches.
-            matchCapitals=${matchingName//[^A-Z]/}
+            local j matchCapitals
+            for ((j=0; j<${#matchingName}; j++)); do
+                if [[ ${matchingName:$j:1} =~ [:upper:] ]]; then
+                    matchCapitals+=${matchingName:$j:1}
+                fi
+            done
             if [[ "$abbrCapitals" == "$matchCapitals" ]]; then
                 ((capitalMatchIndices[capitalMatchesCount++] = candidateIndex))
             fi
@@ -1542,7 +1547,7 @@ function generateWhereClause()
 
 
 ########################################################################################################
-# normalizeNCVConstruct  NCVtype NCVargument
+# normalizeNCVConstruct (NCVtype, NCVargument)
 # A major subroutine of generateWhereClause() that makes sense of a single NCV-argument (Name-Comparator-Value)
 # and adjusts its components to a uniform, easily-managed format:
 #    Expands embedded filenames to the files' content in the form of comma-separated lists
@@ -1567,7 +1572,8 @@ function normalizeNCVConstruct()
     # Break down the NCV into name, comparator (defaulting to "=") and value. Only the value is guaranteed to be present.
 #TODO In the future, sthg like RHS/LHS would be better names than name & value because of their broader generality.
 #TODO Just avoid shadowing the "rhs" we use in the caller.
-    if [[ $2 =~ (.*)${tokenDelimiter}${tt[COMPARATOR]}([=\<\!\>]+)(.*) ]]; then
+
+    if [[ $2 =~ (.*)${tokenDelimiter}[0-9]+${tt[COMPARATOR]}([=\<\!\>]+)(.*) ]]; then
         name=${BASH_REMATCH[1]}
         comparator=${BASH_REMATCH[2]}
         value=${BASH_REMATCH[3]}
