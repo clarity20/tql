@@ -807,7 +807,12 @@ function expandAbbreviatedName()
         local currCandidate
         local candidateIndex=0
         abbrLength=${#nameAbbr}
-        abbrCapitals=${nameAbbr//[^A-Z]/}
+        local k abbrCapitals
+        for ((k=0; k<abbrLength; k++)); do
+            if [[ ${nameAbbr:$k:1} =~ [A-Z] ]]; then
+                abbrCapitals+=${nameAbbr:$k:1}
+            fi
+        done
         unset capitalMatchIndices
         local capitalMatchesCount=0
 
@@ -828,7 +833,7 @@ function expandAbbreviatedName()
             # This is our criterion when there are no perfect matches.
             local j matchCapitals
             for ((j=0; j<${#matchingName}; j++)); do
-                if [[ ${matchingName:$j:1} =~ [:upper:] ]]; then
+                if [[ ${matchingName:$j:1} =~ [A-Z] ]]; then
                     matchCapitals+=${matchingName:$j:1}
                 fi
             done
@@ -837,6 +842,7 @@ function expandAbbreviatedName()
             fi
 
             ((candidateIndex++))
+            unset matchCapitals
         done
 
         # If we get here, we have only non-exact matches which match on the word boundaries (capital letters) ...
