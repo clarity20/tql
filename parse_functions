@@ -42,7 +42,7 @@ function parseQueryClause()
     declare -i NCVCount=0
     local outputStream=""
     local letter="" previousLetter nextLetter
-    local tokensInNCV="" currentNcvType currentSide
+    local tokensInNCV="" finalTokenCount currentNcvType currentSide
     declare -i wasLeftSideModulus=$FALSE
 
     # Preprocess the input string: clean up escape sequences and delimit the NCV subexpressions
@@ -87,10 +87,10 @@ function parseQueryClause()
                 [${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])
                     currentNcvType=""
                     currentSide=""
+                    finalTokenCount=$tokensInNCV; tokensInNCV=""
                     # Copy the NCV terminator token to the output with the final token count
-                    streamToken $nextLetter$tokensInNCV; outputStream+=$g_returnString
+                    streamToken $nextLetter$finalTokenCount; outputStream+=$g_returnString
                     advanceStream "$inputStream" 3; inputStream=$g_returnString
-                    tokensInNCV=""
                     ;;
                 ${tt[SPACE]})
                     streamToken $nextLetter; outputStream+=$g_returnString
