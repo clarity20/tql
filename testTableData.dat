@@ -4,3 +4,7 @@
              fork         int          0
              capTestI     varchar      X
              capTestIv    varchar      X
+             matchSeta    char          
+             matchSetb    char          
+             matchSetc    char          
+

@@ -1,0 +1,37 @@
+# vim:filetype=sh:fdm=marker:
+
+# build_functions: Software infrastructure to construct SQL code given a fully marked-up
+# input string consisting of a single ((name)-comparator)-value predicate or expression
+# in the abbreviated syntax of TQL.
+
+if ((g_sourcedGlobals!=1)); then
+    source tql_globals
+    g_sourcedGlobals=1
+fi
+
+####################################################################################
+# evaluateTree (parsedTQL [, currentLevel])
+# Traverses the parse tree of a TQL expression level-by-level in order of
+# operator precedence so that "smart" type analysis can be performed.
+# This function will evaluate the tree for a single choice of word expansions.
+# The choice is denoted by an array of indices at caller scope. (This is bash,
+# after all.) Typically, the caller will set these indices before invoking
+# this function or iterate over them and call this function repeatedly.
+####################################################################################
+function evaluateTree()
+{
+    local inputStream=$1 currentLevel=${2:-0}
+
+    # Define the search expression to locate the next operator at this level
+    # We will treat comparators as another kind of operator.
+    local operatorFlag=$tokenDelimiter#[${tt[OPERATOR]}${tt[COMPARATOR]}]
+
+#MMMM DEBUG: show the iterate
+for ((i=0; i<expansionCount; i++)); do
+    echo -n ${listIndices[i]}
+done
+echo
+
+    return 0
+}
+

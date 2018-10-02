@@ -9,6 +9,11 @@ TQL_SCHEMA_CACHE=$TQL_HOME/testTableData.dat
 loadTableDescription $TQL_SCHEMA_CACHE
 #echo "$g_masterColumnList"
 
+type=${tt[TYPE_NCV]}
+where="fo=cTI+mS"
+generateWhereClause "$where"
+#normalizePredicate "$type" "$ret"  # strip ncv markup first
+
 _preselects=fa
 expandSelections $_preselects
 echo "$_preselects" expanded to "$g_returnString"
@@ -30,3 +35,4 @@ echo "$_preselects" expanded to "$g_returnString"
 _preselects=cTI
 expandSelections $_preselects
 echo "$_preselects" expanded to "$g_returnString"
+

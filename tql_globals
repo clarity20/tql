@@ -46,10 +46,12 @@ tt=(
     [END_GROUP]=')'
     [BEGIN_FUNCTION]='['
     [END_FUNCTION]=']'
-    [END_NCV]='/'
-    [END_CV]='\'
-    [END_V]='|'
+    [END_NCV]='/'  [TYPE_NCV]='/'    # let the end markers / type names be synonymous
+    [END_CV]='\'   [TYPE_CV]='\'
+    [END_V]='|'    [TYPE_V]='|'
 
     [DELIMITER]=','
 )
+
+declare -r g_expandableTypes=${tt[EXPANDABLE_WORD]}${tt[EXPANDABLE_SEQUENCE]}${tt[FUNCTION]}
 

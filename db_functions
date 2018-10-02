@@ -15,8 +15,22 @@ PATH=$TQL_HOME:$BASHFUNC_HOME/bin:/usr/local/bin:/usr/bin
 shopt -s extglob
 
 # Locate isArgOfType.
+# Universal TQL constants. TODO Move more of the constants below into this file.
+if ((g_sourcedGlobals!=1)); then
+    source $TQL_HOME/tql_globals
+    g_sourcedGlobals=1
+fi
+
 # TODO Phase this out; bring isArgOfType into the sqlUtils code
 source $TQL_HOME/script_functions
+
+source $TQL_HOME/build_functions
+
+# Universal TQL constants. TODO Move more of the constants below into this file.
+if ((g_sourcedGlobals!=1)); then
+    source $TQL_HOME/tql_globals
+    g_sourcedGlobals=1
+fi
 
 # TODO Phase in the following idea more comprehensively, and add a mnemonic/convention for CONSTant values.
 # Introduce some variable naming conventions to compensate for BASH's shortcomings with respect to scoping.
@@ -25,12 +39,6 @@ source $TQL_HOME/script_functions
 # (2) Use the form "_varName_funcAbbr" for variables local to the indicated function
 #     and everything lower in the call stack, and used in both.
 # (3) Otherwise, variable names follow no explicit convention.
-
-# Universal TQL constants. TODO Move more of the constants below into this file.
-if ((g_sourcedGlobals!=1)); then
-    source $TQL_HOME/tql_globals
-    g_sourcedGlobals=1
-fi
 
 declare -r delim=$'\n'
 declare -r delim2=$'\f'
@@ -376,8 +384,8 @@ function expandSelections()
 {
     local rawSelections=$1
 
-    selectionDelimiter=$tokenDelimiter${tt[DELIMITER]}"0" # 0 assumes the delimiters have no enclosing parens
-    expandableTypes=${tt[EXPANDABLE_WORD]}${tt[EXPANDABLE_SEQUENCE]}${tt[FUNCTION]}
+    local selectionDelimiter=$tokenDelimiter${tt[DELIMITER]}"0" # 0 assumes the delimiters have no enclosing parens
+    local tokenizedSelections completeExpansion currentSelection expandedSelection
 
     # Tokenize the (comma-delimited) list of selections
     parseQueryClause "$rawSelections"; tokenizedSelections=$g_returnString
@@ -401,7 +409,8 @@ function expandSelections()
         #TODO before we prune them down through semantic analysis of the parse tree.
         #TODO Right now, we are rolling out the architecture that enables us to accumulate them.
         expandedSelection=""
-        while [[ $currentSelection =~ ($tokenDelimiter[0-9]+)([$expandableTypes])([^$tokenDelimiter]+)(${tokenDelimiter}.*|$) ]]; do
+        local tokenPrefix expansionType currentAbbr unexpandablePrefix
+        while [[ $currentSelection =~ ($tokenDelimiter[0-9]+)([$g_expandableTypes])([^$tokenDelimiter]+)(${tokenDelimiter}.*|$) ]]; do
             tokenPrefix=${BASH_REMATCH[1]}
             expansionType=${BASH_REMATCH[2]}
             currentAbbr=${BASH_REMATCH[3]}
@@ -740,7 +749,7 @@ function expandAbbreviatedName()
             set +f
 
             # Now we extract the matching entries from the full list of candidates
-            $matchFinderCommand
+            $matchFinderCommand   # Generates the initial list of matches
             numCandidates=${#_expand_matchList[@]}
         fi
     fi  # end of the first expansion/match attempt
@@ -845,23 +854,27 @@ function expandAbbreviatedName()
             unset matchCapitals
         done
 
-        # If we get here, we have only non-exact matches which match on the word boundaries (capital letters) ...
+        # If we get here, we have only true-abbreviations which match at the word boundaries ...
         if ((capitalMatchesCount == 1)); then
             g_returnString=${_expand_matchList[capitalMatchIndices[0]]//$delim/$delim2}
             return 0
+
         elif ((capitalMatchesCount > 1)); then
             # Reduce the candidates list to the records which meet the word boundaries criterion
             for ((candidateIndex=0; candidateIndex < capitalMatchesCount; candidateIndex++)); do
-                _expand_matchList[candidateIndex]=${_expand_matchList[capitalMatchIndices[candidateIndex]]}
+                # Redelimit the fields with the secondary delimiter
+                _expand_matchList[candidateIndex]=${_expand_matchList[capitalMatchIndices[candidateIndex]]//$delim/$delim2}
             done
             while ((candidateIndex < numCandidates)); do
                 unset _expand_matchList[candidateIndex++]
             done
-            # Delimit the list of matching records at two levels: record-by-record, and by field within each record
+
+            # Redelimit the records with the primary delimiter
             OLDFS=$IFS; IFS=$'\n'
-            g_returnString=${_expand_matchList[@]//$delim/$delim2}
+            g_returnString="${_expand_matchList[*]}"
             IFS=$OLDFS
             return 0
+
         else # no matches.
             g_returnString=$nameAbbr${delim2}""
             return 2
@@ -1423,7 +1436,7 @@ function generateWhereClause()
     # Declare helper variables
     declare -i numWheres=0 numDftNumCols=0 numDftAlnumCols=0
     declare -a whereComponent
-    local _wheres_bIsList _wheres_bIncludesNull _wheres_bIsRange _wheres_bIsNameGiven
+    local _wheres_bIsList _wheres_bIncludesNull _wheres_bIsRange
     local name code comparator value
     local valueType sql
 
@@ -1466,36 +1479,30 @@ function generateWhereClause()
         local rhs=$parsedStr
         local sql=" $g_mainConjunction ("   # this outermost '(' ensures the "main" conjunctions have least precedence
 
-        # Break up the parsed argument into separate NCVs. For each one, invoke the low-level processors to generate
-        # the correct SQL and link them together with the right boolean conjunctions
+        # Break up the argument into its n-c-v predicates. For each predicate, invoke the low-level SQL
+        # generators and link the predicates together with the right boolean conjunctions
         while [[ -n $rhs ]]; do
 
-            # Pull the next NCV or boolean or parenthetical token from the parsed string
+            # Pull the next predicate, boolean, or parenthetical token from the parsed string
 
-            # (Gently) handle space markers
-            if [[ $rhs =~ ^$tokenDelimiter${tt[SPACE]} ]]; then
-                sql+=" "
-                advanceStream "$rhs" 2; rhs=$g_returnString
-                continue
-
-            # NCV expression delimiters
-            elif [[ $rhs =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}([0-9]+) ]]; then
+            # Front delimiters for predicates
+            if [[ $rhs =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}([0-9]+) ]]; then
                 ncvCounter=${BASH_REMATCH[1]}
                 advanceStream "$rhs" ${BASH_REMATCH[0]}; rhs=$g_returnString
 
                 # Retrieve the end delimiter
-                [[ $rhs =~ ^(${tokenDelimiter}[^$tokenDelimiter]*)$tokenDelimiter([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])([0-9]+) ]]
-                ncv=${BASH_REMATCH[1]}
-                ncvType=${BASH_REMATCH[2]}
-                tokenCount=${BASH_REMATCH[3]}
-                advanceStream "$rhs" ${BASH_REMATCH[0]}; rhs=$g_returnString
+                [[ $rhs =~ $tokenDelimiter([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])([0-9]+)(.*) ]]
+                ncv=${rhs%${BASH_REMATCH[0]}}
+                ncvType=${BASH_REMATCH[1]}
+                tokenCount=${BASH_REMATCH[2]}
+                rhs=${BASH_REMATCH[3]}
 
-                # "Clean up" the NCV. Open with "(" or "NOT (" as appropriate.
-                normalizeNCVConstruct $ncvType "$ncv"; _wheres_bIsNameGiven=$?
+                # "Clean up" the predicate. Open with "(" or "NOT (" as appropriate.
+                normalizePredicate $ncvType "$ncv"
 
                 # Build the SQL fragment for the current NCV. Choose a builder based on
                 # whether the NCV contains an explicit name.
-                if ((_wheres_bIsNameGiven)); then
+                if [[ $ncvType == ${tt[TYPE_NCV]} ]]; then
                     processNamedNCVArgument
                 else
                     processUnnamedNCVArgument
@@ -1527,6 +1534,12 @@ function generateWhereClause()
                 sql+=" OR"
                 advanceStream "$rhs" "${BASH_REMATCH[0]}"; rhs=$g_returnString
                 continue
+
+            # space markers
+            elif [[ $rhs =~ ^$tokenDelimiter${tt[SPACE]} ]]; then
+                sql+=" "
+                advanceStream "$rhs" 2; rhs=$g_returnString
+                continue
             fi
 
         done
@@ -1553,8 +1566,8 @@ function generateWhereClause()
 
 
 ########################################################################################################
-# normalizeNCVConstruct (NCVtype, NCVargument)
-# A major subroutine of generateWhereClause() that makes sense of a single NCV-argument (Name-Comparator-Value)
+# normalizePredicate (predicateType, predicate)
+# A major subroutine of generateWhereClause() that makes sense of a single name-comparator-value predicate
 # and adjusts its components to a uniform, easily-managed format:
 #    Expands embedded filenames to the files' content in the form of comma-separated lists
 #    Expands abbreviated ranges and prefix lists to full value pairs and lists, respectively
@@ -1562,38 +1575,35 @@ function generateWhereClause()
 #    Factors out negative comparators as NOTs plus the inverse comparators
 # This subroutine does not generate any SQL except for a prefix of either "(" or "NOT (" as appropriate.
 ########################################################################################################
-function normalizeNCVConstruct()
+function normalizePredicate()
 {
     local msg=""
-    local br2 isNameGiven
-    local ncvType=$1
+    local br2
+    local predicateType=$1
+    local predicate=$2
 
     ((_wheres_bIsList = FALSE))
     ((_wheres_bIncludesNull = FALSE))
     ((_wheres_bIsRange = FALSE))
 
-#TODO Starting in this function, we need to accommodate the new delimited, marked-up input format.
-#TODO That means that the markup must not be removed or disturbed as this function does its cleaning up.
-
-    # Break down the NCV into name, comparator (defaulting to "=") and value. Only the value is guaranteed to be present.
-#TODO In the future, sthg like RHS/LHS would be better names than name & value because of their broader generality.
-#TODO Just avoid shadowing the "rhs" we use in the caller.
-
-    if [[ $2 =~ (.*)${tokenDelimiter}[0-9]+${tt[COMPARATOR]}[0-9]+([=\<\!\>]+)(.*) ]]; then
+    # The input predicate is formatted with delimiters and markup. Here we break it down
+    # into name, comparator (defaulting to "=") and value. Only the value is guaranteed to be present.
+#TODO Rename name & value to leftSide and rightSide. Careful, they have broad scope.
+    [[ $predicate =~ (.*)${tokenDelimiter}[0-9]+${tt[COMPARATOR]}[0-9]+([=\<\!\>]+)(.*) ]]
+    if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then
         name=${BASH_REMATCH[1]}
         comparator=${BASH_REMATCH[2]}
         value=${BASH_REMATCH[3]}
             #TODO For now, chop away all markup and delimiters right here so the code below will run as-is
             #TODO on simple NCV inputs. This is of course a stopgap measure that won't work with complex inputs.
-            nameType=${name:1:1}    name=${name:2}    # throw out the delimiter, the ${name:0:1} position
-            valueType=${value:1:1}  value=${value:2}
+            nameType=${name:2:1}    name=${name:3}    # skip the delimiter and count
+            valueType=${value:2:1}  value=${value:3}
     else
         comparator='='
         value=${BASH_REMATCH[1]}
             # TODO as just above
-            valueType=${value:1:1}  value=${value:2}
+            valueType=${value:2:1}  value=${value:3}
     fi
-    isNameGiven=${#name}
 
     # If the comparator is negative ('<>' or '!=') then factor out a NOT and invert the comparator
     #TODO Mark this "(" for easy deletion in case it turns out to be superfluous
@@ -1605,12 +1615,83 @@ function normalizeNCVConstruct()
         sql+=" ("
     fi
 
-    # Expand any abbreviated names
-#TODO Expansion is very sensitive to the new lexed string stuff. Not only the names but also certain values
-#TODO as well as function names will need to be expanded. This is where we will have to break down name and value
-#TODO and go token-by-token. So we'll prolly pass n, c and v to expand() which will then do the legwork. Instead
-#TODO of getting back a single name and code we'll get back all expanded names & codes for both the LHS and the RHS.
-    if ((isNameGiven)); then
+    # For each of the predicate's abbreviations get a list of expansion candidates
+    # based on spelling and case alone. Segregate these lists by expansion type.
+    local expansionType currentAbbr
+    declare -a columnLists sequenceLists functionLists expansionLists
+    declare -i columnCount sequenceCount functionCount expansionCount
+    local tempPredicate=$predicate    # a scratch copy we can prune as we traverse it
+    while [[ "$tempPredicate" =~ ${tokenDelimiter}[0-9]+([$g_expandableTypes])([^$tokenDelimiter]+)(.*) ]]; do
+        expansionType=${BASH_REMATCH[1]}
+        currentAbbr=${BASH_REMATCH[2]}
+        tempPredicate=${BASH_REMATCH[3]}
+
+        if [[ $expansionType == ${tt[EXPANDABLE_WORD]} ]]; then
+            # Column name abbreviation
+            getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; columnLists[columnCount++]=$g_returnString
+        elif [[ $expansionType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
+            # Abbreviated word sequence
+#MMMM Needs finishing:
+            expandSequence "$currentAbbr"; expandedName=$g_returnString
+        else
+            # Function name abbreviation
+#MMMM Needs finishing:
+            getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; functionLists[functionCount++]=$g_returnString
+        fi
+    done
+
+    # Iterate the type-analysis algorithm over all combinations of expansions
+
+    # Initialize the iteration
+    declare -i whichIndex=0
+    # Concatenate the arrays of expansion-candidate lists
+    expansionLists=("${columnLists[@]}" "${sequenceLists[@]}" "${functionLists[@]}")
+    expansionCount=${#expansionLists[@]}
+    # Determine the size of each list
+    declare -ai listLengths
+    declare -a tempList
+    for ((whichIndex = 0; whichIndex < expansionCount; whichIndex++)); do
+        tempList=(${expansionLists[whichIndex]})
+        listLengths[whichIndex]=${#tempList[@]}
+    done
+
+    # Run the iteration over all combinations of list items
+    declare -ai listIndices      # internal representation of the iterate
+    for ((whichIndex=0; whichIndex<expansionCount; whichIndex++)); do listIndices[whichIndex]=0; done
+    while (($TRUE)); do
+        # Point the incrementer to the last index
+        ((whichIndex = expansionCount-1))
+
+        # Backtrack to the hindmost incrementable index: the last one
+        # strictly less than the corresponding list length
+        while ((listIndices[whichIndex] == listLengths[whichIndex]-1)); do
+            ((whichIndex--))
+            if ((whichIndex<0)); then break; fi
+        done
+        if ((whichIndex<0)); then break; fi
+
+        # EXECUTE THE ALGORITHM ON THIS ITERATE:
+        # Use the lexical structure of the predicate to narrow down the candidates to those
+        # which are correct in a grammatical sense as well as in an abbreviated-spelling sense.
+        evaluateTree "$predicate"
+
+        # Adjust the index and the trailer
+        ((listIndices[whichIndex]++))
+        for ((whichIndex+=1; whichIndex<expansionCount; whichIndex++)); do
+            listIndices[whichIndex]=0
+        done
+    done
+
+echo Done.
+exit 98
+
+
+
+
+# Eventually:
+unset columnLists sequenceLists functionLists expansionLists listIndices listRanges
+
+    if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then
         expandColumnNames "$TABLE_NAMES" "$name"
         name=${g_returnString%$delim*}      # this is the post-processed (expanded) name
         code=${g_returnString#*$delim}      # the code tells us how to treat the value
@@ -1622,7 +1703,7 @@ function normalizeNCVConstruct()
         ((_wheres_bIsList = TRUE))
         # If the list is stdin-sourced, prompt the user for the content
         if [[ "${BASH_REMATCH[0]}" == @@ ]]; then
-            if ((isNameGiven)); then msg="for '$name' "; fi
+            if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then msg="for '$name' "; fi
             echo '>>> Your values '${msg:-} '(finish with <enter> <ctrl-D>):' > /dev/stderr
         fi
         # Load and strip the values. Some extra cleanup is needed that doesn't apply to cmdline lists.
@@ -1665,7 +1746,6 @@ function normalizeNCVConstruct()
         fi
     fi
 
-    return $isNameGiven
 }
 
 ########################################################################################################
