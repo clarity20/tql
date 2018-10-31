@@ -494,14 +494,14 @@ function useIntuitiveNulls()
 
         # Find the ")" character that closes the NOT clause.
         # For cases (1),(2) we can just chop at the first ")" since they will never have internal parentheses
-        notClause=${rhs%%)*}")"
+        local notClause=${rhs%%)*}")"
 
         # For case (3), the preceding is not correct because of the internal parentheses
         if [[ $notClause =~ \(.*\( ]]; then
             # Extend the NOT clause to the terminating "))" or "NULL)", whichever is nearer. Choose by chopping the string both ways and measuring.
             # Note: If the applicable terminating sequence is all the way at the end, then the chopped pieces will have equal length. Careful!
-            toNextParens=${rhs%%\)\)*}
-            toNextNULL=${rhs%%NULL\)*}
+            local toNextParens=${rhs%%\)\)*}
+            local toNextNULL=${rhs%%NULL\)*}
             ((lengthDiff=${#toNextNULL}-${#toNextParens}))
             if [[ ( $lengthDiff -gt 0 ) || ( $lengthDiff -eq 0 && $toNextParens =~ \)\) ) ]]; then
                 notClause=$toNextParens"))"
@@ -523,7 +523,7 @@ function useIntuitiveNulls()
             # we check whether the last column name differs from the first, and if so
             # we'll iterate over default{Num,Alnum}Cols; otherwise we just take the first column name we see.
 
-            originalNotClause=$notClause
+            local originalNotClause=$notClause
 
             # Parse out the first column name
             [[ $notClause =~ \(([^ ]*)\ (LIKE|IN|=)(.*) ]]
@@ -536,6 +536,7 @@ function useIntuitiveNulls()
                 [[ $notClause =~ ([^ ]*)\ (LIKE|IN|=)\ [^\ ]*$ ]]
                 lastColumnName="${BASH_REMATCH[1]}"
 
+                local columnList
                 if [[ $firstColumnName == $lastColumnName ]]; then
                     columnList=$firstColumnName
                 elif [[ $g_defaultAlnums =~ $firstColumnName.*$lastColumnName ]]; then
@@ -1478,6 +1479,7 @@ function generateWhereClause()
         # Prepare to walk the lexed argument forward
         local rhs=$parsedStr
         local sql=" $g_mainConjunction ("   # this outermost '(' ensures the "main" conjunctions have least precedence
+        local tokenCount
 
         # Break up the argument into its n-c-v predicates. For each predicate, invoke the low-level SQL
         # generators and link the predicates together with the right boolean conjunctions
@@ -1617,69 +1619,107 @@ function normalizePredicate()
 
     # For each of the predicate's abbreviations get a list of expansion candidates
     # based on spelling and case alone. Segregate these lists by expansion type.
-    local expansionType currentAbbr
-    declare -a columnLists sequenceLists functionLists expansionLists
-    declare -i columnCount sequenceCount functionCount expansionCount
+    local expansionType tokenNumber currentAbbr
+    declare -a columnLists    sequenceLists    functionLists    expansionLists    # expansion candidate lists
+    declare -a columnTokenIDs sequenceTokenIDs functionTokenIDs expansionTokenIDs # token numbers for each list
+    declare -i columnCount    sequenceCount    functionCount    expansionCount    # number of candidate lists
     local tempPredicate=$predicate    # a scratch copy we can prune as we traverse it
-    while [[ "$tempPredicate" =~ ${tokenDelimiter}[0-9]+([$g_expandableTypes])([^$tokenDelimiter]+)(.*) ]]; do
-        expansionType=${BASH_REMATCH[1]}
-        currentAbbr=${BASH_REMATCH[2]}
-        tempPredicate=${BASH_REMATCH[3]}
+    while [[ "$tempPredicate" =~ ${tokenDelimiter}([0-9]+)([$g_expandableTypes])([^$tokenDelimiter]+)(.*) ]]; do
+        tokenNumber=${BASH_REMATCH[1]}
+        expansionType=${BASH_REMATCH[2]}
+        currentAbbr=${BASH_REMATCH[3]}
+        tempPredicate=${BASH_REMATCH[4]}
 
         if [[ $expansionType == ${tt[EXPANDABLE_WORD]} ]]; then
             # Column name abbreviation
+            columnTokenIDs[columnCount]=$tokenNumber
             getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; columnLists[columnCount++]=$g_returnString
         elif [[ $expansionType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
             # Abbreviated word sequence
+            sequenceTokenIDs[sequenceCount]=$tokenNumber
 #MMMM Needs finishing:
-            expandSequence "$currentAbbr"; expandedName=$g_returnString
+            expandSequence "$currentAbbr"; ((sequenceCount++)); expandedName=$g_returnString
         else
             # Function name abbreviation
+            functionTokenIDs[functionCount]=$tokenNumber
 #MMMM Needs finishing:
             getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; functionLists[functionCount++]=$g_returnString
         fi
     done
 
-    # Iterate the type-analysis algorithm over all combinations of expansions
-
-    # Initialize the iteration
-    declare -i whichIndex=0
-    # Concatenate the arrays of expansion-candidate lists
+    # Concatenate the expansion-candidate lists
     expansionLists=("${columnLists[@]}" "${sequenceLists[@]}" "${functionLists[@]}")
     expansionCount=${#expansionLists[@]}
+    # Concatenate the token-index lists
+    expansionTokenIDs=("${columnTokenIDs[@]}" "${sequenceTokenIDs[@]}" "${functionTokenIDs[@]}")
     # Determine the size of each list
-    declare -ai listLengths
+    declare -ai listLengths listOffsets
     declare -a tempList
+    declare -i whichIndex=0        # count off the expandables during iteration
+    declare -i accumulator=0
     for ((whichIndex = 0; whichIndex < expansionCount; whichIndex++)); do
         tempList=(${expansionLists[whichIndex]})
         listLengths[whichIndex]=${#tempList[@]}
+        ((listOffsets[whichIndex] = accumulator+listLengths[whichIndex]))
+        accumulator=${listOffsets[whichIndex]}
     done
 
-    # Run the iteration over all combinations of list items
-    declare -ai listIndices      # internal representation of the iterate
-    for ((whichIndex=0; whichIndex<expansionCount; whichIndex++)); do listIndices[whichIndex]=0; done
-    while (($TRUE)); do
-        # Point the incrementer to the last index
-        ((whichIndex = expansionCount-1))
+    ######
+    # Advance through all expandables in the predicate. At every point,
+    # run a semantic analysis on all possible user selections before choosing
+    # a value for the current point and moving to the next point.
+    ######
 
-        # Backtrack to the hindmost incrementable index: the last one
-        # strictly less than the corresponding list length
-        while ((listIndices[whichIndex] == listLengths[whichIndex]-1)); do
-            ((whichIndex--))
-            if ((whichIndex<0)); then break; fi
-        done
-        if ((whichIndex<0)); then break; fi
+    declare -ai listIndices       # mechanism of iteration over all possible expansions
+    declare -i startingIndex=0     # the coordinate at which to start iterating
+    declare -a feasibilityTrackers # the expansion choices for which a feasible context exists
+    declare -i listOffset=0        # offset into the expansion lists and feasibility indicators
+                                   # that allows us to treat them like 2-D arrays
 
-        # EXECUTE THE ALGORITHM ON THIS ITERATE:
-        # Use the lexical structure of the predicate to narrow down the candidates to those
-        # which are correct in a grammatical sense as well as in an abbreviated-spelling sense.
-        evaluateTree "$predicate"
-
-        # Adjust the index and the trailer
-        ((listIndices[whichIndex]++))
-        for ((whichIndex+=1; whichIndex<expansionCount; whichIndex++)); do
+    while ((startingIndex < expansionCount)); do
+        for ((whichIndex = startingIndex; whichIndex < expansionCount; whichIndex++)); do
             listIndices[whichIndex]=0
         done
+        while (($TRUE)); do
+            # Point the incrementer to the last index
+            ((whichIndex = expansionCount-1))
+
+            # Backtrack to the hindmost incrementable index: the last one
+            # strictly less than the corresponding list length
+            while ((listIndices[whichIndex] == listLengths[whichIndex]-1)); do
+                ((whichIndex--))
+                if ((whichIndex<startingIndex)); then break; fi
+            done
+            if ((whichIndex<startingIndex)); then break; fi
+
+            # EXECUTE THE ALGORITHM ON THIS ITERATE:
+            # Use the lexical structure of the predicate to determine whether the combination
+            # of choices which the current iterate represents is grammatically permissible
+            evaluateTree "$predicate"
+
+            # Record whether the tree evaluated successfully, i.e. the combination is permitted
+            if [[ $? != $ERR_INVALID_TYPE ]]; then
+                # Set the feasibility markers for this node
+                for ((i=startingIndex; i<expansionCount; i++)); do
+                    # The markers are seated at the positions of the coordinates in the flattened list
+                    # The index will be the (i)th listOffset + the value at the (i)th inflated coordinate
+                    ((feasibilityTrackers[listOffsets[i]+listIndices[i]]++))
+                done
+            fi
+
+            # Adjust the index and the trailer
+            ((listIndices[whichIndex]++))
+            for ((whichIndex+=1; whichIndex<expansionCount; whichIndex++)); do
+                listIndices[whichIndex]=0
+            done
+        done
+
+        # The iteration is complete. Use the feasibility trackers to prune the lists of choices.
+
+        # Obtain the user's choice if needed.
+
+        # Repeat until all necessary user selections have been made.
+        ((startingIndex++))
     done
 
 echo Done.
@@ -1690,6 +1730,7 @@ exit 98
 
 # Eventually:
 unset columnLists sequenceLists functionLists expansionLists listIndices listRanges
+unset columnIndices sequenceIndices functionIndices expansionIndices
 
     if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then
         expandColumnNames "$TABLE_NAMES" "$name"

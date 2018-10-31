@@ -10,12 +10,12 @@ declare -r quote1="'"
 declare -r quote2='"'
 declare -r eitherQuote=$quote1$quote2
 
-# This map defines the markup flags that indicate token type and metadata.
-# We choose an unobtrusive name so the subscripts will stand out.
+# Define the markup flags that describe token types, metadata, and data types.
 declare -A tt
 tt=(
     [FUNCTION_ARITY]='A'
     [BOOLEAN]='B'
+    [BLOB]='b'
     [COMPARATOR]='C'
     [DATE]='D'
     [DATE_RANGE]='d'
@@ -32,6 +32,8 @@ tt=(
     [PREFIX_LIST]='P'
     [REGEX_LIST]='R'
     [SPACE]='S'             # distinguishes cosmetic spaces from spaces inside other tokens
+    [TIME]='T'
+    [TIMESTAMP]='t'
     [STRING_CONSTANT]='V'
 
     # A word that might be a string constant or an abbreviated variable name:
@@ -42,16 +44,21 @@ tt=(
     [EXPANDABLE_SEQUENCE]='X'
 
     [FILENAME]='@'
-    [BEGIN_GROUP]='('
-    [END_GROUP]=')'
+    [BEGIN_GROUP]='('  [LEFT_PAREN]='('
+    [END_GROUP]=')'    [RIGHT_PAREN]=')'
     [BEGIN_FUNCTION]='['
     [END_FUNCTION]=']'
-    [END_NCV]='/'  [TYPE_NCV]='/'    # let the end markers / type names be synonymous
-    [END_CV]='\'   [TYPE_CV]='\'
-    [END_V]='|'    [TYPE_V]='|'
+    [END_NCV]='/'      [TYPE_NCV]='/'    # let the end markers / type names be synonymous
+    [END_CV]='\'       [TYPE_CV]='\'
+    [END_V]='|'        [TYPE_V]='|'
 
     [DELIMITER]=','
+
+    [ANY_TYPE]=.
 )
 
 declare -r g_expandableTypes=${tt[EXPANDABLE_WORD]}${tt[EXPANDABLE_SEQUENCE]}${tt[FUNCTION]}
+
+# Error/status codes
+declare -ri ERR_INVALID_OPERATION=1
 
