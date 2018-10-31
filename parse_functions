@@ -370,9 +370,9 @@ function parseQueryClause()
                     value+=$nextChar${BASH_REMATCH[1]}
                     inputStream=${BASH_REMATCH[2]}
                     if [[ $value =~ \. ]]; then
-                        streamToken ${tt[FLOATLIST]}$value; outputStream+=$g_returnString
+                        streamToken ${tt[FLOAT_LIST]}$value; outputStream+=$g_returnString
                     else
-                        streamToken ${tt[INTLIST]}$value; outputStream+=$g_returnString
+                        streamToken ${tt[INT_LIST]}$value; outputStream+=$g_returnString
                     fi
                 fi
                 ;;
