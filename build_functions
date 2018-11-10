@@ -42,31 +42,18 @@ g_operatorStrength=(
 [":="]=7
 )
 
-# Enumerate the ways in which resultant data types are determined from binary operators
-# and their operands. It is convenient to store this information in two arrays:
-# one for comparator expressions and one for all the rest.
-
-# For non-comparator expressions we use a key-value scheme. The keys consist of
-# the first type, the operator, and the second type, and the values hold the resultant type.
-# We abbreviate the list by using a regular expression to denote any operators where appropriate
-#MMMM The code will look for both the .* and the literal indices before throwing an error.
-declare -A g_opTypeResolutions
-declare -r regex_anyOperator=".*"
-g_optypeResolutions=(
-[${tt[INTEGER]}${regex_anyOperator}${tt[INTEGER]}]=${tt[INTEGER]}
-[${tt[DECIMAL]}${regex_anyOperator}${tt[DECIMAL]}]=${tt[DECIMAL]}
-[${tt[INTEGER]}${regex_anyOperator}${tt[DECIMAL]}]=${tt[DECIMAL]}
-[${tt[DECIMAL]}${regex_anyOperator}${tt[INTEGER]}]=${tt[INTEGER]}
-[${tt[DATE]}"+"${tt[INTEGER]}]=${tt[DATE]}
-)
+# Enumerate the ways in which the resultant data types of complex expressions
+# can be deduced from their operators and the types of their operands.
+# We partition this information in two data structures according to whether
+# or not the operator is a comparator.
 
 # For comparator expressions we list the permissible forms in a simple array.
-# Each entry lays out the first type, the operator(s) and the second type forl
-# a permissible form or set of forms.
-# We shorten the list of by using regular expressions and by checking in the code
-# whether both object types are the same.
+# Each entry specifies a permissible form or set of forms: a first type,
+# the operator(s) and a second type.
+# We use regular expressions to shorten the overall list, and in the code
+# we blanket-permit every form in which both types are the same.
 declare -a g_compTypeResolutions
-declare -r regex_equalOrNot="^(\!?=|<=?>)$"      # will match one of  !=  =  <>  <=>
+declare -r regex_equalOrNot="^(\!?=|<=?>)$"      # will match any of  !=  =  <>  <=>
 g_compTypeResolutions=(
 "${tt[INTEGER]}${regex_equalOrNot}${tt[INT_LIST]}"
 "${tt[INTEGER]}${regex_equalOrNot}${tt[FLOAT_LIST]}"
@@ -75,6 +62,20 @@ g_compTypeResolutions=(
 "${tt[FLOAT]}${regex_equalOrNot}${tt[FLOAT_LIST]}"
 "${tt[STRING_CONSTANT]}${regex_equalOrNot}${tt[REGEX_LIST]}"
 "${tt[DATE]}${regex_equalOrNot}${tt[DATE_RANGE]}"
+)
+
+# For non-comparator expressions we use a key-value scheme. The keys consist of
+# a type, operator(s) (optionally), and another type, and the values hold the resultant type.
+# When the operator is omitted we are indicating that the relation applies irrespective of the operator.
+# We use a regular expression to denote an arbitrary operator where appropriate.
+declare -A g_opTypeResolutions
+declare -r regex_anyOperator=".*"
+g_opTypeResolutions=(
+[${tt[INTEGER]}${regex_anyOperator}${tt[INTEGER]}]=${tt[INTEGER]}
+[${tt[DECIMAL]}${regex_anyOperator}${tt[DECIMAL]}]=${tt[DECIMAL]}
+[${tt[INTEGER]}${regex_anyOperator}${tt[DECIMAL]}]=${tt[DECIMAL]}
+[${tt[DECIMAL]}${regex_anyOperator}${tt[INTEGER]}]=${tt[INTEGER]}
+[${tt[DATE]}"+"${tt[INTEGER]}]=${tt[DATE]}
 )
 
 ####################################################################################
@@ -90,20 +91,22 @@ g_compTypeResolutions=(
 function evaluateTree()
 {
     local expression=$1 currentLevel=${2:-0}
-    local operatorToken=${tokenDelimiter}[0-9]+([${tt[COMPARATOR]}${tt[OPERATOR]}])$currentLevel([^${tokenDelimiter}]+)
+    declare -i retVal
+    local leftType rightType
+    local operatorToken="${tokenDelimiter}[0-9]+([${tt[COMPARATOR]}${tt[OPERATOR]}])$currentLevel([^${tokenDelimiter}]+)"
     local spaceToken=${tokenDelimiter}${tt[SPACE]}
     local leftParenToken=${tokenDelimiter}[0-9]+${tt[LEFT_PAREN]}[0-9]+
     local rightParenToken=${tokenDelimiter}[0-9]+${tt[RIGHT_PAREN]}[0-9]+
 
-    # Find the "strongest" operator at the current level; divide and recurse there
+    # Find the "strongest" operator at the current level; divide there and recurse down both sides
     local tempExpr=$expression
     local currOperator operator operatorType leftSide rightSide
     declare -i currStrength maxStrength
-    while [[ "$tempExpr" =~ ${operatorToken}(.*) ]]; do
+    while [[ "$tempExpr" =~ ${operatorToken}(.*) ]]; do   # N.B. first parts of BASH_REMATCH are hidden in $operatorToken
         currOperator=${BASH_REMATCH[2]}
 
         # Heart of the maximization algorithm: Is the operator the strongest so far (or at least a tie)?
-        currStrength=${g_operatorStrength[operator]}  # Look up the operator "strength"
+        currStrength=${g_operatorStrength[$currOperator]}  # Look up the operator "strength"
         if ((currStrength >= maxStrength)); then      # Compare with >= to favor equal operators further to the right;
                                                       # this enforces left-associativity.
             maxStrength=$currStrength
@@ -115,7 +118,7 @@ function evaluateTree()
             rightSide=${BASH_REMATCH[3]}
         fi
 
-        tempExpr=$expression%${BASH_REMATCH[0]}
+        tempExpr=${BASH_REMATCH[3]}
     done
 
     # If an operator was found ...
@@ -128,33 +131,33 @@ function evaluateTree()
 
         # Left side: Check for parenthesization
         if [[ $leftSide =~ (${spaceToken})*${leftParenToken}(.*)${rightParenToken}(${spaceToken})* ]]; then
-            # If it is parenthesized, strip the parens and evaluate the left side at the next-higher level
+            # If it is parenthesized, strip the parens and evaluate the left side at the next nesting level
             leftSide=${BASH_REMATCH[2]}
-            evaluateTree "$leftSide" $((currentLevel+1)); leftType=$?
+            evaluateTree "$leftSide" $((currentLevel+1)); leftType=$g_returnString
         else
             # If it is not parenthesized, evaluate the left side at the same level
-            evaluateTree "$leftSide" $currentLevel; leftType=$?
+            evaluateTree "$leftSide" $currentLevel; leftType=$g_returnString
         fi
 
         # If the expression is known to be invalid, jump up and out
-        if [[ $leftType == $ERR_INVALID_TYPE ]]; then
-            return $ERR_INVALID_TYPE
+        if [[ $leftType == ${tt[INVALID_TYPE]} ]]; then
+            return $leftType
         fi
 
         # Repeat the above for the right side
         if [[ $rightSide =~ (${spaceToken})*${leftParenToken}(.*)${rightParenToken}(${spaceToken})* ]]; then
             rightSide=${BASH_REMATCH[2]}
-            evaluateTree "$rightSide" $((currentLevel+1)); rightType=$?
+            evaluateTree "$rightSide" $((currentLevel+1)); rightType=$g_returnString
         else
-            evaluateTree "$rightSide" $currentLevel; rightType=$?
+            evaluateTree "$rightSide" $currentLevel; rightType=$g_returnString
         fi
-        if [[ $rightType == $ERR_INVALID_TYPE ]]; then
-            return $ERR_INVALID_TYPE
+        if [[ $rightType == ${tt[INVALID_TYPE]} ]]; then
+            return $rightType
         fi
 
         # Combine the types using the operator
-        lookupResultantType $leftType $operator $operatorType $rightType; retVal=$?
-        return $retVal
+        lookupResultantType $leftType $operator $operatorType $rightType
+        return        # g_returnString will have just been set
 
     else # No operator was found at the current level. This means we are left with either
         # a function call, a solitary token of expandable type, or a primitive constant.
@@ -179,12 +182,12 @@ function evaluateTree()
                 for ((i=0; i < columnCount; i++)); do
                     if ((tokenNumber == columnTokenIDs[i])); then
                         tempList=(${columnLists[i]})
-                        tempLine=${tempList[listTokenIDs[i]]}
+                        tempLine=${tempList[listIndices[i]]}
                         # Parse out the RDBMS type, convert to an internal type and return it
                         [[ "$tempLine" =~ $delim2(.*)$delim2 ]]
                         sqlType=${BASH_REMATCH[1]}
                         sqlTypeToInternalType "$sqlType"
-                        return $g_returnString
+                        return 0 # $g_returnString will have been set
                     fi
                 done
                 ;;
@@ -193,7 +196,8 @@ function evaluateTree()
                 ;;
             default)
                 # Any "normal" single token
-                return $tokenType
+                g_returnString=$tokenType
+                return 0
                 ;;
         esac
     fi
@@ -218,23 +222,23 @@ function sqlTypeToInternalType()
 
     # Note carefully which comparisons use the "==" sign and which use the "=~"
     if [[ "$sqlType" =~ (int|^bool|^bit|^year) ]]; then
-        return ${tt[INTEGER]}
+        g_returnString=${tt[INTEGER]}
     elif [[ "$sqlType" =~ (char|binary|enum) ]]; then   # char, varchar, binary
-        return ${tt[STRING_CONSTANT]}
+        g_returnString=${tt[STRING_CONSTANT]}
     elif [[ "$sqlType" =~ (^dec|^num|^double|^float|^fix) ]]; then
-        return ${tt[DECIMAL]}
+        g_returnString=${tt[DECIMAL]}
     elif [[ "$sqlType" == date ]]; then
-        return ${tt[DATE]}
+        g_returnString=${tt[DATE]}
     elif [[ "$sqlType" == time ]]; then
-        return ${tt[TIME]}
+        g_returnString=${tt[TIME]}
     elif [[ "$sqlType" =~ time ]]; then   # datetime and timestamp
-        return ${tt[TIMESTAMP]}
+        g_returnString=${tt[TIMESTAMP]}
     elif [[ "$sqlType" =~ (blob|text) ]]; then
-        return ${tt[BLOB]}
+        g_returnString=${tt[BLOB]}
     elif [[ "$sqlType" == set ]]; then
-        return ${tt[SET]}
+        g_returnString=${tt[SET]}
     else
-        return $ERR_INVALID_TYPE
+        g_returnString=${tt[INVALID_TYPE]}
     fi
 }
 
@@ -247,17 +251,16 @@ function sqlTypeToInternalType()
 function lookupResultantType()
 {
     declare -r type1=$1 operator=$2 operatorType=$3 type2=$4
-    declare -i resultantType=$ERR_INVALID_TYPE
+    local resultantType=${tt[INVALID_TYPE]}
     local typeSchematicIndex
 
     if [[ $operatorType == ${tt[COMPARATOR]} ]]; then
-        # Like types can always be compared. The comparison gives a result
-        # of either 0 (false) or 1 (true). With the following shortcut, we avoid
+        # Like types can always be compared. With the following shortcut, we avoid
         # having to enumerate every combination of type and comparator separately.
         if [[ "$type1" == "$type2" ]]; then
             resultantType=${tt[INTEGER]}
 
-        # Other expressions with comparators need to be looked up in
+        # Other expressions involving comparators need to be looked up in
         # the enumerative list.
         else
             typeSchematicIndex=$type1$operator$type2
@@ -265,7 +268,7 @@ function lookupResultantType()
             # Look for the above schematic among the array elements.
             # The array is small, so linear search is fast enough.
             for ((i=0; i < ${#g_compTypeResolutions}; i++)); do
-                if (( "$typeSchematicIndex" =~ ^${g_compTypeResolutions[i]}$ ]]; then
+                if [[ "$typeSchematicIndex" =~ ^${g_compTypeResolutions[$i]}$ ]]; then
                     resultantType=${tt[INTEGER]}
                     break
                 fi
@@ -273,15 +276,18 @@ function lookupResultantType()
         fi
 
     else
-# Fill in a few basic cases here, and fill in the single-token base case in the caller.
-        # String together the 3 args. They will index an associative array
-        # whose value indicates the data type of the operation's result.
-        # An empty / nonexistent result denotes an illegal operation.
+        # Lookup the resultant type for this type schematic
         typeSchematicIndex=$type1$operator$type2
-        resultantType=${g_typeResolutions[typeSchematicIndex]}  #MMMM set up this array globally.
-        [[ -z $resultantType ]] && resultantType=$ERR_INVALID_OPERATION
+        resultantType=${g_opTypeResolutions[$typeSchematicIndex]}
+        # If there is no type for this schematic, look for a general schematic that fits
+        if [[ -z $resultantType ]]; then
+            typeSchematicIndex=$type1$regex_anyOperator$type2
+            resultantType=${g_opTypeResolutions[$typeSchematicIndex]}
+        fi
+        # An empty / nonexistent result indicates an illegal operation
+        : ${resultantType:=${tt[INVALID_TYPE]}}
     fi
 
-    return $resultantType
+    g_returnString=$resultantType
 }
 

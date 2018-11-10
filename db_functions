@@ -1659,9 +1659,9 @@ function normalizePredicate()
     declare -i accumulator=0
     for ((whichIndex = 0; whichIndex < expansionCount; whichIndex++)); do
         tempList=(${expansionLists[whichIndex]})
+        ((listOffsets[whichIndex] = accumulator))
         listLengths[whichIndex]=${#tempList[@]}
-        ((listOffsets[whichIndex] = accumulator+listLengths[whichIndex]))
-        accumulator=${listOffsets[whichIndex]}
+        accumulator+=${listLengths[whichIndex]}
     done
 
     ######

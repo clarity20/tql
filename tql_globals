@@ -55,10 +55,11 @@ tt=(
     [DELIMITER]=','
 
     [ANY_TYPE]=.
+    [INVALID_TYPE]=1        # This doubles as an error code so it must be a number
 )
 
 declare -r g_expandableTypes=${tt[EXPANDABLE_WORD]}${tt[EXPANDABLE_SEQUENCE]}${tt[FUNCTION]}
 
 # Error/status codes
-declare -ri ERR_INVALID_OPERATION=1
+declare -ri ERR_INVALID_TYPE=${tt[INVALID_TYPE]}   # Converts ${tt[INVALID_TYPE]} to a number
 
