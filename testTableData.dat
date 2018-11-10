@@ -3,8 +3,8 @@
              foot         int          0
              fork         int          0
              capTestI     varchar      X
-             capTestIv    varchar      X
-             matchSeta    char          
+             capTestIv    int          X
+             matchSeta    int           
              matchSetb    char          
              matchSetc    char          
 
