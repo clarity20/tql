@@ -7,8 +7,8 @@ of all, there are countless ways to improve upon command-line SQL for greater
 terseness and general ease-of-use for the power user. Second of all, the top
 priority for this project has always been to build out the feature set to make
 the project as useful (and as interesting) as possible. Engineering concerns are
-secondary. The code is good but, as with any project, it can be improved
-in various ways. This alone gives rise to a fairly extensive TODO list. See the
+secondary to this. The code is good but, as with any project, it can be improved
+in various ways. This alone gives rise to a fairly extensive TODO list; see the
 "Style TODO" section for a start.
 
 Features TODO
@@ -18,29 +18,28 @@ Features TODO
         convert many more kinds of input expressions into valid SQL queries.
 
         (1) lexer/parser: Implementation nearly done.
-            Leftover edge cases: solitary NULLs and minus-sign negation
+            Leftover edge cases: solitary NULLs and %s and minus-sign negation
             Main function body is too long
             Consider an option to ditch spaces and superfluous parentheses
                 around NCVs. Implement through two new options, --clean and
                 --preserve, defaulting to the former.
 
         (2) smart expander: In progress.
-            Construct a simplified, high-level expander and query assembler for
-                WHEREs similar to the one used for SELECTs
+            Refactor the smart expander into separate functions callable in any
+                kind of SQL clause
             Add the literal string to the candidate match lists of
                 simple right-hand-side expressions
+            Fully flesh out the hard-coded syntax rules in file build_functions
             Design an expander/assembler for UPDATEs to resemble WHEREs & SELECTs
             Add function-name expansion capability
             Add word-sequence expansion capability
-            Identify depth of subexpressions from parens and order-of-operations
-            Define legal combinations of data types and the types that the
-                combinations resolve to
-            Resolve the data types of expressions based on their subtrees
             Prune the completion candidate lists based on grammar and context,
                 prompting the user only when there is no realistic way to
                 figure out his intentions
+            Optimize the smart expansion by implementing same-type lookahead
 
         (3) query builder: Not yet started.
+            March straight through the input in the simplest cases
             Preliminary design work for transformations / "operator overloading"
             Handle the COUNT(*) function
             Old code for handling numeric ranges, regex lists, etc. should be
@@ -64,6 +63,7 @@ Features TODO
 
 Style TODO
     Clean up long lines that wrap
+    Polish up terminology, e.g. "predicate" > "NCV"
     Recheck comments for accuracy, needfulness, and comprehensibility
     Reorganize code into smaller files, focusing on db_functions
     Move should-be global constants into tql_globals
@@ -85,12 +85,15 @@ Style TODO
 Documentation and Presentation TODO
     Explain challenges of debugging (for project wiki)
         Issues with bashdb
-            "next <n>" behaves like "step" when a function call is encountered
-            regular expressions and the BASH_REMATCH shell variable
+            "next <n>" sometimes steps into, not over
+            "continue" causes debugger to exit at exit statements
         Workarounds
+            Fix for BASH_REMATCH was accepted by Rocky
             bash -x
             set -xv, as in my "trace" function
-            straightforward echo/printf/od (octal dump)
+            prefer parameter passing over relying on globals
+            refactor code for easier testing (modularize!) where convenient
+            straightforward tracing with echo/printf/od (octal dump)
             pros and cons of testing scripts
         Alternative testing tools/frameworks
             refer to open-source repositories
@@ -99,10 +102,14 @@ Documentation and Presentation TODO
     The README should be mostly a detailed usage document
     Revisit the comments for accuracy and clarity, especially function headers
     Compose more material for the project blog
+    Plan a white paper: abstract, intro, history (?), design, key achievements,
+        future work, generalizations: expressiveness and usability
+        considerations
 
 Testing TODO
     Work toward activating and running all parser test cases at once
     Parser tests: update for the new token-counting feature
     Use new features as a springboard to flesh out main-module tests
-    Integrate with an existing testing framework such as awesome-shell's "bats"
+    Integrate with an existing testing framework such as awesome-shell's "bats."
+        Also, Rocky uses "shunit" for bashdb.
 
