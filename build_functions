@@ -267,7 +267,7 @@ function lookupResultantType()
             declare -i i;     #TODO Move to tql_globals. Add a "j" too.
             # Look for the above schematic among the array elements.
             # The array is small, so linear search is fast enough.
-            for ((i=0; i < ${#g_compTypeResolutions}; i++)); do
+            for ((i=0; i < ${#g_compTypeResolutions[@]}; i++)); do
                 if [[ "$typeSchematicIndex" =~ ^${g_compTypeResolutions[$i]}$ ]]; then
                     resultantType=${tt[INTEGER]}
                     break

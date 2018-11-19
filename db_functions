@@ -420,16 +420,19 @@ function expandSelections()
             case $expansionType in
                 ${tt[EXPANDABLE_WORD]})
                     getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; expansionCandidates=$g_returnString
-                    promptForExpansion "$currentAbbr" "$expansionCandidates"; expandedName=$g_returnString
+                    promptForExpansion "$currentAbbr" "$expansionCandidates"
+                    expandedName=${g_returnString%:*}
                     ;;
                 ${tt[EXPANDABLE_SEQUENCE]})
 #MMMM Needs finishing:
-                    expandSequence "$currentAbbr"; expandedName=$g_returnString
+                    expandSequence "$currentAbbr"
+                    expandedName=$g_returnString
                     ;;
                 ${tt[FUNCTION]})
 #MMMM Needs finishing:
                     getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; expansionCandidates=$g_returnString
-                    promptForExpansion "$currentAbbr" "$expansionCandidates"; expandedName=$g_returnString
+                    promptForExpansion "$currentAbbr" "$expansionCandidates"
+                    expandedName=${g_returnString%:*}
                     #MMMM finalizeExpandedFunctionName $expandedName
                     ;;
             esac
@@ -902,7 +905,7 @@ function promptForExpansion()
     else
         # If we cannot identify a single "best" match, we ask the user to choose one from the list
         echo Please enter a number for \"$1\": > /dev/stderr
-        select matchingName in ${matchList[@]%%$delim2*}; do    # This array-chop shd work for both tables and columns
+        select matchingName in ${matchList[@]%%$delim2*}; do    # Select the first column only
             if [[ -z $matchingName ]]; then
                 # Keep trying until we get a response.
                 echo ERROR: Please choose a number from the list. > /dev/stderr
@@ -924,7 +927,12 @@ function promptForExpansion()
     fi
 
     # Break out the name and data from the selected line
-    $finalizeExpandedNameCommand "$matchingLine"
+#    $finalizeExpandedNameCommand "$matchingLine"
+    [[ $matchingLine =~ $delim2(.*)$delim2 ]]
+    local matchingType=${BASH_REMATCH[1]}
+    sqlTypeToInternalType $matchingType; local internalType=$g_returnString
+
+    g_returnString=$matchingName:$internalType
     return 0
 }
 
@@ -1619,7 +1627,8 @@ function normalizePredicate()
 
     # For each of the predicate's abbreviations get a list of expansion candidates
     # based on spelling and case alone. Segregate these lists by expansion type.
-    local expansionType tokenNumber currentAbbr
+    local expansionType tokenNumber currentAbbr expandedName
+    declare -a inputColumnNames inputSequenceNames inputFunctionNames shortNames  # abbreviated names to be expanded
     declare -a columnLists    sequenceLists    functionLists    expansionLists    # expansion candidate lists
     declare -a columnTokenIDs sequenceTokenIDs functionTokenIDs expansionTokenIDs # token numbers for each list
     declare -i columnCount    sequenceCount    functionCount    expansionCount    # number of candidate lists
@@ -1633,23 +1642,28 @@ function normalizePredicate()
         if [[ $expansionType == ${tt[EXPANDABLE_WORD]} ]]; then
             # Column name abbreviation
             columnTokenIDs[columnCount]=$tokenNumber
+            inputColumnNames[columnCount]=$currentAbbr
             getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; columnLists[columnCount++]=$g_returnString
         elif [[ $expansionType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
             # Abbreviated word sequence
             sequenceTokenIDs[sequenceCount]=$tokenNumber
+            inputSequenceNames[sequenceCount]=$currentAbbr
 #MMMM Needs finishing:
             expandSequence "$currentAbbr"; ((sequenceCount++)); expandedName=$g_returnString
         else
             # Function name abbreviation
             functionTokenIDs[functionCount]=$tokenNumber
+            inputFunctionNames[functionCount]=$currentAbbr
 #MMMM Needs finishing:
             getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; functionLists[functionCount++]=$g_returnString
         fi
     done
 
-    # Concatenate the expansion-candidate lists
+    # Concatenate the abbreviations and the expansion-candidate lists
+    shortNames=("${inputColumnNames[@]}" "${inputSequenceNames[@]}" "${inputFunctionNames[@]}")
     expansionLists=("${columnLists[@]}" "${sequenceLists[@]}" "${functionLists[@]}")
     expansionCount=${#expansionLists[@]}
+
     # Concatenate the token-index lists
     expansionTokenIDs=("${columnTokenIDs[@]}" "${sequenceTokenIDs[@]}" "${functionTokenIDs[@]}")
     # Determine the size of each list
@@ -1673,8 +1687,6 @@ function normalizePredicate()
     declare -ai listIndices       # mechanism of iteration over all possible expansions
     declare -i startingIndex=0     # the coordinate at which to start iterating
     declare -a feasibilityTrackers # the expansion choices for which a feasible context exists
-    declare -i listOffset=0        # offset into the expansion lists and feasibility indicators
-                                   # that allows us to treat them like 2-D arrays
 
     while ((startingIndex < expansionCount)); do
         for ((whichIndex = startingIndex; whichIndex < expansionCount; whichIndex++)); do
@@ -1688,9 +1700,9 @@ function normalizePredicate()
             # strictly less than the corresponding list length
             while ((listIndices[whichIndex] == listLengths[whichIndex]-1)); do
                 ((whichIndex--))
-                if ((whichIndex<startingIndex)); then break; fi
+                if ((whichIndex < startingIndex)); then break; fi
             done
-            if ((whichIndex<startingIndex)); then break; fi
+            if ((whichIndex < startingIndex)); then break; fi
 
             # EXECUTE THE ALGORITHM ON THIS ITERATE:
             # Use the lexical structure of the predicate to determine whether the combination
@@ -1714,78 +1726,122 @@ function normalizePredicate()
             done
         done
 
-        # The iteration is complete. Use the feasibility trackers to prune the lists of choices.
+        # The iteration is complete. Time to apply our analysis of the current coordinate
+        # by pruning the lists of candidates.
+        declare -i j k   #TODO Make these global
 
-        # Obtain the user's choice if needed.
+        # Walk this and the following coordinates
+        for ((i=startingIndex; i<expansionCount; i++)); do
+
+            # Compress this coordinate's candidate list
+            tempList=(${expansionLists[i]})
+            k=0
+            for ((j=0; j<listLengths[i]; j++)); do
+                if ((feasibilityTrackers[listOffsets[i]+j] > 0)); then
+                    tempList[k]=${tempList[j]}
+                    ((k++))
+                fi
+            done
+
+            # Compress what was deleted
+            for ((; k<listLengths[i]; k++)); do
+                unset tempList[k]
+            done
+
+            # Update the stats of the compressed list
+            listLengths[i]=${#tempList[@]}
+
+            # Restore the structure of the list
+            expansionLists[i]="${tempList[@]}"
+        done
+
+        # Obtain the user's choice if needed
+        promptForExpansion "${shortNames[startingIndex]}" "${expansionLists[startingIndex]}"
+        expandedName=${g_returnString%:*}
+        local internalType=${g_returnString#$expandedName:}
+
+        # Reconstruct the predicate with the full name, "word" indicator, and internal type filled in
+        [[ "$predicate" =~ (.*${tokenDelimiter}[0-9]+[$g_expandableTypes])(${shortNames[$startingIndex]})(.*) ]]
+        predicate=${BASH_REMATCH[1]}$internalType$expandedName${BASH_REMATCH[3]}
 
         # Repeat until all necessary user selections have been made.
         ((startingIndex++))
     done
 
+    unset columnLists sequenceLists functionLists expansionLists listIndices listRanges
+    unset columnIndices sequenceIndices functionIndices expansionIndices shortNames
+    unset columnTokenIDs sequenceTokenIDs functionTokenIDs expansionTokenIDs feasibilityTrackers
+
 echo Done.
 exit 98
 
-
-
-
 # Eventually:
-unset columnLists sequenceLists functionLists expansionLists listIndices listRanges
-unset columnIndices sequenceIndices functionIndices expansionIndices
 
-    if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then
-        expandColumnNames "$TABLE_NAMES" "$name"
-        name=${g_returnString%$delim*}      # this is the post-processed (expanded) name
-        code=${g_returnString#*$delim}      # the code tells us how to treat the value
-    fi
+# Perform any transformations that are called for
 
+# Construct the SQL. How we do it depends on the existence and complexity of the left
+# and right sides and the types of tokens they contain
+
+
+
+# Superseded by the new code above:
+#    if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then
+#        expandColumnNames "$TABLE_NAMES" "$name"
+#        name=${g_returnString%$delim*}      # this is the post-processed (expanded) name
+#        code=${g_returnString#*$delim}      # the code tells us how to treat the value
+#    fi
+
+#MMMM: One case of a token that needs unraveling:
     # Load file- and stdin-sourced lists into regular list values and set the "is list" indicator
 #TODO To get the column name (for stderr), walk the parse tree from the "@@" marker
-    if [[ "$value" =~ $embeddedFileRegex ]]; then
-        ((_wheres_bIsList = TRUE))
-        # If the list is stdin-sourced, prompt the user for the content
-        if [[ "${BASH_REMATCH[0]}" == @@ ]]; then
-            if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then msg="for '$name' "; fi
-            echo '>>> Your values '${msg:-} '(finish with <enter> <ctrl-D>):' > /dev/stderr
-        fi
-        # Load and strip the values. Some extra cleanup is needed that doesn't apply to cmdline lists.
-        loadFileAsCommaList "${BASH_REMATCH[1]:-/dev/stdin}"
-        value=$g_returnString
-    else
-        isArgOfType "$value" list
-        _wheres_bIsList=$?
-    fi
+#    if [[ "$value" =~ $embeddedFileRegex ]]; then
+#        ((_wheres_bIsList = TRUE))
+#        # If the list is stdin-sourced, prompt the user for the content
+#        if [[ "${BASH_REMATCH[0]}" == @@ ]]; then
+#            if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then msg="for '$name' "; fi
+#            echo '>>> Your values '${msg:-} '(finish with <enter> <ctrl-D>):' > /dev/stderr
+#        fi
+#        # Load and strip the values. Some extra cleanup is needed that doesn't apply to cmdline lists.
+#        loadFileAsCommaList "${BASH_REMATCH[1]:-/dev/stdin}"
+#        value=$g_returnString
+#    else
+#        isArgOfType "$value" list
+#        _wheres_bIsList=$?
+#    fi
 
-   # If the value includes a NULL marker, set a flag that we will use to treat NULLs in the necessary special way
-    # without "disturbing" ordinary values.
-    if [[ $value =~ (^|,)$NULL_INDICATOR(,|$) ]]; then
+#MMMM Avoid special NULL stuff just yet
+#    # If the value includes a NULL marker, set a flag that we will use to treat NULLs in the necessary special way
+#    # without "disturbing" ordinary values.
+#    if [[ $value =~ (^|,)$NULL_INDICATOR(,|$) ]]; then
+#
+#        # Set the NULL flag.
+#        ((_wheres_bIncludesNull = TRUE))
+#
+#        # Remove the NULL marker from list-type values, leaving the normal values in place.
+#        # (In the case of singleton null markers, we leave them alone to distinguish them from empty arguments.
+#        # In all cases we will use the null flag exclusively, disregarding the value, to handle NULLs.)
+#        if ((_wheres_bIsList)); then
+#            br2=${BASH_REMATCH[2]}
+#            if [[ "${BASH_REMATCH[1]}" == , ]]; then br2=; fi
+#            value="${value/${BASH_REMATCH[1]}$NULL_INDICATOR$br2/}"
+#        fi
+#    fi
 
-        # Set the NULL flag.
-        ((_wheres_bIncludesNull = TRUE))
-
-        # Remove the NULL marker from list-type values, leaving the normal values in place.
-        # (In the case of singleton null markers, we leave them alone to distinguish them from empty arguments.
-        # In all cases we will use the null flag exclusively, disregarding the value, to handle NULLs.)
-        if ((_wheres_bIsList)); then
-            br2=${BASH_REMATCH[2]}
-            if [[ "${BASH_REMATCH[1]}" == , ]]; then br2=; fi
-            value="${value/${BASH_REMATCH[1]}$NULL_INDICATOR$br2/}"
-        fi
-    fi
-
-    # In the case of abbreviated value ranges or lists, expand them to complete interval specs or lists
-    isArgOfType "$value" "numRange|dateRange|prefixList"
-    valueType=$?
-    if ((valueType > 0)); then
-
-        # Expand the abbreviated values into complete ones
-        expandValueSet $value $valueType
-        value=$g_returnString
-
-        # Ranges need to be flagged for subsequent conversion to BETWEEN...AND subclauses
-        if ((valueType==1 || valueType==2)); then
-            ((_wheres_bIsRange = TRUE))
-        fi
-    fi
+#MMMM Another case of a token that needs unraveling
+#    # In the case of abbreviated value ranges or lists, expand them to complete interval specs or lists
+#    isArgOfType "$value" "numRange|dateRange|prefixList"
+#    valueType=$?
+#    if ((valueType > 0)); then
+#
+#        # Expand the abbreviated values into complete ones
+#        expandValueSet $value $valueType
+#        value=$g_returnString
+#
+#        # Ranges need to be flagged for subsequent conversion to BETWEEN...AND subclauses
+#        if ((valueType==1 || valueType==2)); then
+#            ((_wheres_bIsRange = TRUE))
+#        fi
+#    fi
 
 }
 
