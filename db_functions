@@ -894,7 +894,7 @@ function generateWhereClause()
     declare -i numWheres=0 numDftNumCols=0 numDftAlnumCols=0
     declare -a whereComponent
     local _wheres_bIsList _wheres_bIncludesNull _wheres_bIsRange
-    local name code comparator value
+    local name nameType code comparator value
     local valueType sql
 
     # Array-ify the column name inference rules
@@ -922,24 +922,20 @@ function generateWhereClause()
         fi
     fi
 
-#TODO Since we will expand() the n-c-v particles below, we need to remove the expand() invocation way up above and the
-#TODO expanded substitution(s) down here. This will change the behavior of the functions involved, so any supporting script that
-#TODO calls these functions will have to be revisited.
-
     # Handle each argument in turn
     while [[ -n $1 ]]; do
 
         # Parse and lexically analyze the argument
-        parseQueryClause "$1" $TRUE; parsedStr=$g_returnString
+        parseQueryClause "$1" $TRUE
+        local rhs=$g_returnString
 
         # Prepare to walk the lexed argument forward
-        local rhs=$parsedStr
         local sql=" $g_mainConjunction ("   # this outermost '(' ensures the "main" conjunctions have least precedence
-        local tokenCount
 
         # Break up the argument into its n-c-v predicates. For each predicate, invoke the low-level SQL
         # generators and link the predicates together with the right boolean conjunctions
         while [[ -n $rhs ]]; do
+            local ncv ncvType ncvCounter tokenCount nestingLevel
 
             # Pull the next predicate, boolean, or parenthetical token from the parsed string
 
@@ -1531,11 +1527,11 @@ function loadFileAsCommaList()
     if [[ "$values" =~ ^, ]]; then values=${values##+(,)}; fi
     if [[ "$values" =~ ,$ ]]; then values=${values%%+(,)}; fi
     # (4) remove quote-protection
-    if [[ "$values" =~ [\"\'] ]]; then
-        if [[ "$values" =~ [\"\'], ]]; then values=${values//[\"\'],/,}; fi
-        if [[ "$values" =~ ,[\"\'] ]]; then values=${values//,[\"\']/,}; fi
-        if [[ "$values" =~ [\"\']$ ]]; then values=${values%%[\"\']}; fi
-        if [[ "$values" =~ ^[\"\'] ]]; then values=${values##[\"\']}; fi
+    if [[ "$values" =~ [$eitherQuote] ]]; then
+        if [[ "$values" =~ [$eitherQuote], ]]; then values=${values//[$eitherQuote],/,}; fi
+        if [[ "$values" =~ ,[$eitherQuote] ]]; then values=${values//,[$eitherQuote]/,}; fi
+        if [[ "$values" =~ [$eitherQuote]$ ]]; then values=${values%%[$eitherQuote]}; fi
+        if [[ "$values" =~ ^[$eitherQuote] ]]; then values=${values##[$eitherQuote]}; fi
     fi
     # Done.
     IFS=$OLDFS

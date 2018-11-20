@@ -40,7 +40,7 @@ function parseQueryClause()
     local isWhereClause=${2:-$FALSE}
     declare -i globalNestingLevel=0 funcNestingLevel=0
     declare -i NCVCount=0
-    local outputStream=""
+    local rawToken outputStream=""
     local letter="" previousLetter nextLetter
     local tokensInNCV="" finalTokenCount currentNcvType currentSide
     declare -i wasLeftSideModulus=$FALSE
@@ -223,7 +223,7 @@ function parseQueryClause()
             # a quote mark that follows a "word" tells us it was not really a word but the start of a literal value that has yet
             # to terminate. (We include the % sign among these characters on the assumption that it appears as the SQL globbing
             # operator. We have code elsewhere that corrects this assumption if it turns out to be the modulus operator instead.)
-            nonwordExtenders=[_%${eitherQuote}]
+            local nonwordExtenders=[_%${eitherQuote}]
 
             if ((funcNestingLevel==0)); then
                 # Outside function calls, we interpret commas as delimiters appearing within lists, which are non-word values.
@@ -693,7 +693,7 @@ function delimitNCVsInString()
 
         # Set the NCV-beginning delimiter
         tokensInNCV=""
-        streamToken ${tt[BEGIN_NCV]}$((++ncvCount)); beginDelimiter=$g_returnString
+        streamToken ${tt[BEGIN_NCV]}$((++ncvCount)); local beginDelimiter=$g_returnString
 
         # Select the NCV-ending delimiter for the NCV type
         local ncvType

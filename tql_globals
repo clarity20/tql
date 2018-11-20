@@ -6,9 +6,9 @@ declare -r FALSE=0
 declare -r LEFT_SIDE=0
 declare -r RIGHT_SIDE=1
 
-declare -r quote1="'"
-declare -r quote2='"'
-declare -r eitherQuote=$quote1$quote2
+declare -r strongQuote="'"
+declare -r weakQuote='"'
+declare -r eitherQuote=$strongQuote$weakQuote
 
 # Define the markup flags that describe token types, metadata, and data types.
 declare -A tt

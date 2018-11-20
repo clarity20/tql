@@ -29,7 +29,7 @@ Features TODO
                 kind of SQL clause
             Add the literal string to the candidate match lists of
                 simple right-hand-side expressions
-            Fully flesh out the hard-coded syntax rules in file build_functions
+            Fully flesh out the hard-coded syntax rules in file expand_functions
             Design an expander/assembler for UPDATEs to resemble WHEREs & SELECTs
             Add function-name expansion capability
             Add word-sequence expansion capability
@@ -67,6 +67,8 @@ Style TODO
     Recheck comments for accuracy, needfulness, and comprehensibility
     Reorganize code into smaller files, focusing on db_functions
     Move should-be global constants into tql_globals
+    Migrate to explicit config settings. Rely less on caller scripts
+        and env settings
     Consider a case convention for variable and function names
     Consider when & how to indicate scope in variable names
     Clean up the function foldResultSet()

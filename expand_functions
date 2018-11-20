@@ -579,7 +579,7 @@ function expandAbbreviatedName()
     declare -a _expand_columnWidths
 
     # Initialize the parser settings
-    $parserSetupCommand
+    $parserSetupCommand; unset parserSetupCommand
 
     unset _expand_matchList
 
@@ -639,6 +639,7 @@ function expandAbbreviatedName()
 
             # Now we extract the matching entries from the full list of candidates
             $matchFinderCommand   # Generates the initial list of matches
+            unset matchFinderCommand
             numCandidates=${#_expand_matchList[@]}
         fi
     fi  # end of the first expansion/match attempt
@@ -650,7 +651,7 @@ function expandAbbreviatedName()
 
     if ((numCandidates == 0)); then
 
-        _expand_nameRegex=""; upper=${nameAbbr^^}
+        _expand_nameRegex=""; local upper=${nameAbbr^^}
         for ((i=0; i<${#nameAbbr}; i++)); do
 
             # Leading asterisk ==> ".*"
@@ -746,6 +747,7 @@ function expandAbbreviatedName()
         # If we get here, we have only true-abbreviations which match at the word boundaries ...
         if ((capitalMatchesCount == 1)); then
             g_returnString=${_expand_matchList[capitalMatchIndices[0]]//$delim/$delim2}
+            unset capitalMatchIndices
             return 0
 
         elif ((capitalMatchesCount > 1)); then
@@ -757,6 +759,7 @@ function expandAbbreviatedName()
             while ((candidateIndex < numCandidates)); do
                 unset _expand_matchList[candidateIndex++]
             done
+            unset capitalMatchIndices
 
             # Redelimit the records with the primary delimiter
             OLDFS=$IFS; IFS=$'\n'
@@ -766,6 +769,7 @@ function expandAbbreviatedName()
 
         else # no matches.
             g_returnString=$nameAbbr${delim2}""
+            unset capitalMatchIndices
             return 2
         fi
     fi
@@ -813,6 +817,8 @@ function promptForExpansion()
 
     # Break out the name and data from the selected line
 #    $finalizeExpandedNameCommand "$matchingLine"
+    unset finalizeExpandedNameCommand
+
     [[ $matchingLine =~ $delim2(.*)$delim2 ]]
     local matchingType=${BASH_REMATCH[1]}
     sqlTypeToInternalType $matchingType; local internalType=$g_returnString
