@@ -1,0 +1,994 @@
+# vim:filetype=sh:
+###############################################################################
+# This file contains software infrastructure to expand/inflate the abbreviated
+# names of database objects appearing in a specially marked-up input expression
+###############################################################################
+
+if ((g_sourcedGlobals != TRUE)); then
+    source tql_globals
+    g_sourcedGlobals=$TRUE
+fi
+
+# We define operator strength as the inverse of operator precedence:
+# the strongest operators are those that can be "seen" from the greatest distance
+declare -A g_operatorStrength
+g_operatorStrength=(
+
+# arithmetic operators
+["/"]=1
+["*"]=1
+["%"]=1
+["+"]=2
+["-"]=2
+
+# bitwise operators
+["^"]=0
+["<<"]=3
+[">>"]=3
+["&"]=4
+["|"]=5
+
+# comparators
+["="]=6
+["!="]=6
+[">"]=6
+["<"]=6
+[">="]=6
+["<="]=6
+["<>"]=6
+["<=>"]=6
+
+# assignment operator
+[":="]=7
+)
+
+# Enumerate the ways in which the resultant data types of complex expressions
+# can be deduced from their operators and the types of their operands.
+# We partition this information in two data structures according to whether
+# or not the operator is a comparator.
+
+# For comparator expressions we list the permissible forms in a simple array.
+# Each entry specifies a permissible form or set of forms: a first type,
+# the operator(s) and a second type.
+# We use regular expressions to shorten the overall list, and in the code
+# we blanket-permit every form in which both types are the same.
+declare -a g_compTypeResolutions
+declare -r regex_equalOrNot="^(\!?=|<=?>)$"      # will match any of  !=  =  <>  <=>
+g_compTypeResolutions=(
+"${tt[INTEGER]}${regex_equalOrNot}${tt[INT_LIST]}"
+"${tt[INTEGER]}${regex_equalOrNot}${tt[FLOAT_LIST]}"
+"${tt[INTEGER]}${regex_equalOrNot}${tt[PREFIX_LIST]}"
+"${tt[INTEGER]}${regex_equalOrNot}${tt[INT_RANGE]}"
+"${tt[FLOAT]}${regex_equalOrNot}${tt[FLOAT_LIST]}"
+"${tt[STRING_CONSTANT]}${regex_equalOrNot}${tt[REGEX_LIST]}"
+"${tt[DATE]}${regex_equalOrNot}${tt[DATE_RANGE]}"
+)
+
+# For non-comparator expressions we use a key-value scheme. The keys consist of
+# a type, operator(s) (optionally), and another type, and the values hold the resultant type.
+# When the operator is omitted we are indicating that the relation applies irrespective of the operator.
+# We use a regular expression to denote an arbitrary operator where appropriate.
+declare -A g_opTypeResolutions
+declare -r regex_anyOperator=".*"
+g_opTypeResolutions=(
+[${tt[INTEGER]}${regex_anyOperator}${tt[INTEGER]}]=${tt[INTEGER]}
+[${tt[DECIMAL]}${regex_anyOperator}${tt[DECIMAL]}]=${tt[DECIMAL]}
+[${tt[INTEGER]}${regex_anyOperator}${tt[DECIMAL]}]=${tt[DECIMAL]}
+[${tt[DECIMAL]}${regex_anyOperator}${tt[INTEGER]}]=${tt[INTEGER]}
+[${tt[DATE]}"+"${tt[INTEGER]}]=${tt[DATE]}
+)
+
+# Lists of substitution macros used to expand possibly-abbreviated names of columns or tables
+#TODO This is db specific; move it to a separate config.
+#TODO Format: two space-delimited columns: expr to find, expr to substitute.
+g_columnExpansionMacros=\
+"
+"
+g_tableExpansionMacros=\
+"
+"
+
+####################################################################################
+# smartExpandExpression (expr)
+# Expands the possibly-abbreviated words in a marked-up expression, in three phases:
+#   1. Compares a given word's spelling and capitalization against a canonical list
+#      of full words
+#   2. Uses type-based rules of grammar and syntax to eliminate infeasible candidates
+#   3. Solicits user input when two or more candidates are feasible choices, and
+#      reruns step 2 if necessary
+####################################################################################
+function smartExpandExpression()
+{
+    local expression=$1
+
+    # For each of the expression's abbreviations get a list of expansion candidates
+    # based on spelling and case alone. Segregate these lists by expansion type.
+    local expansionType tokenNumber currentAbbr expandedName
+    declare -a inputColumnNames inputSequenceNames inputFunctionNames shortNames  # abbreviated names to be expanded
+    declare -a columnLists    sequenceLists    functionLists    expansionLists    # expansion candidate lists
+    declare -a columnTokenIDs sequenceTokenIDs functionTokenIDs expansionTokenIDs # token numbers for each list
+    declare -i columnCount    sequenceCount    functionCount    expansionCount    # number of candidate lists
+    local tempExpression=$expression    # a scratch copy we can prune as we traverse it
+    while [[ "$tempExpression" =~ ${tokenDelimiter}([0-9]+)([$g_expandableTypes])([^$tokenDelimiter]+)(.*) ]]; do
+        tokenNumber=${BASH_REMATCH[1]}
+        expansionType=${BASH_REMATCH[2]}
+        currentAbbr=${BASH_REMATCH[3]}
+        tempExpression=${BASH_REMATCH[4]}
+
+        if [[ $expansionType == ${tt[EXPANDABLE_WORD]} ]]; then
+            # Column name abbreviation
+            columnTokenIDs[columnCount]=$tokenNumber
+            inputColumnNames[columnCount]=$currentAbbr
+            getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; columnLists[columnCount++]=$g_returnString
+        elif [[ $expansionType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
+            # Abbreviated word sequence
+            sequenceTokenIDs[sequenceCount]=$tokenNumber
+            inputSequenceNames[sequenceCount]=$currentAbbr
+#MMMM Needs finishing:
+            expandSequence "$currentAbbr"; ((sequenceCount++)); expandedName=$g_returnString
+        else
+            # Function name abbreviation
+            functionTokenIDs[functionCount]=$tokenNumber
+            inputFunctionNames[functionCount]=$currentAbbr
+#MMMM Needs finishing:
+            getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; functionLists[functionCount++]=$g_returnString
+        fi
+    done
+
+    # Concatenate the abbreviations and the expansion-candidate lists
+    shortNames=("${inputColumnNames[@]}" "${inputSequenceNames[@]}" "${inputFunctionNames[@]}")
+    expansionLists=("${columnLists[@]}" "${sequenceLists[@]}" "${functionLists[@]}")
+    expansionCount=${#expansionLists[@]}
+    # Concatenate the token-index lists
+    expansionTokenIDs=("${columnTokenIDs[@]}" "${sequenceTokenIDs[@]}" "${functionTokenIDs[@]}")
+    # Determine the size of each list
+    declare -ai listLengths listOffsets
+    declare -a tempList
+    declare -i whichIndex=0        # count off the expandables during iteration
+    declare -i accumulator=0
+    for ((whichIndex = 0; whichIndex < expansionCount; whichIndex++)); do
+        tempList=(${expansionLists[whichIndex]})
+        ((listOffsets[whichIndex] = accumulator))
+        listLengths[whichIndex]=${#tempList[@]}
+        accumulator+=${listLengths[whichIndex]}
+    done
+
+    ######
+    # Advance through all expandables in the expression. At every point,
+    # run a semantic analysis on all possible user selections before choosing
+    # a value for the current point and moving to the next point.
+    ######
+
+    declare -ai listIndices       # mechanism of iteration over all possible expansions
+    declare -i startingIndex=0     # the coordinate at which to start iterating
+    declare -a feasibilityTrackers # the expansion choices for which a feasible context exists
+
+    while ((startingIndex < expansionCount)); do
+        for ((whichIndex = startingIndex; whichIndex < expansionCount; whichIndex++)); do
+            listIndices[whichIndex]=0
+            feasibilityTrackers[listOffests[whichIndex]+listIndices[whichIndex]]=0
+        done
+        while (($TRUE)); do
+            # Point the incrementer to the last index
+            ((whichIndex = expansionCount-1))
+
+            # Backtrack to the hindmost incrementable index: the last one
+            # strictly less than the corresponding list length
+            while ((listIndices[whichIndex] == listLengths[whichIndex]-1)); do
+                ((whichIndex--))
+                if ((whichIndex < startingIndex)); then break; fi
+            done
+            if ((whichIndex < startingIndex)); then break; fi
+
+            # EXECUTE THE ALGORITHM ON THIS ITERATE:
+            # Use the lexical structure of the expression to determine whether the combination
+            # of choices which the current iterate represents is grammatically permissible
+            evaluateTree "$expression"
+
+            # Record whether the tree evaluated successfully, i.e. the combination is permitted
+            if [[ $? != $ERR_INVALID_TYPE ]]; then
+                # Set the feasibility markers for this node
+                for ((i=startingIndex; i<expansionCount; i++)); do
+                    # The markers are seated at the positions of the coordinates in the flattened list
+                    # The index will be the (i)th listOffset + the value at the (i)th inflated coordinate
+                    ((feasibilityTrackers[listOffsets[i]+listIndices[i]]++))
+                done
+            fi
+
+            # Adjust the index and the trailer
+            ((listIndices[whichIndex]++))
+            for ((whichIndex+=1; whichIndex<expansionCount; whichIndex++)); do
+                listIndices[whichIndex]=0
+            done
+        done
+
+        # The iteration is complete. Time to apply our analysis of the current coordinate
+        # by pruning the lists of candidates.
+        declare -i j k   #TODO Make these global
+
+        # Walk this and the following coordinates
+        for ((i=startingIndex; i<expansionCount; i++)); do
+
+            # Compress this coordinate's candidate list
+            tempList=(${expansionLists[i]})
+            k=0
+            for ((j=0; j<listLengths[i]; j++)); do
+                if ((feasibilityTrackers[listOffsets[i]+j] > 0)); then
+                    tempList[k]=${tempList[j]}
+                    ((k++))
+                fi
+            done
+
+            # Compress what was deleted
+            for ((; k<listLengths[i]; k++)); do
+                unset tempList[k]
+            done
+
+            # Update the stats of the compressed list
+            listLengths[i]=${#tempList[@]}
+
+            # Restore the structure of the list
+            expansionLists[i]="${tempList[@]}"
+        done
+
+        # Obtain the user's choice if needed
+        promptForExpansion "${shortNames[startingIndex]}" "${expansionLists[startingIndex]}"
+        expandedName=${g_returnString%:*}
+        local internalType=${g_returnString#$expandedName:}
+
+        # Reconstruct the expression with the full name, "word" indicator, and internal type filled in
+        [[ "$expression" =~ (.*${tokenDelimiter}[0-9]+[$g_expandableTypes])(${shortNames[$startingIndex]})(.*) ]]
+        expression=${BASH_REMATCH[1]}$internalType$expandedName${BASH_REMATCH[3]}
+
+        # Repeat until all necessary user selections have been made
+        ((startingIndex++))
+    done
+
+    unset columnLists sequenceLists functionLists expansionLists listIndices listRanges
+    unset columnIndices sequenceIndices functionIndices expansionIndices shortNames
+    unset columnTokenIDs sequenceTokenIDs functionTokenIDs expansionTokenIDs feasibilityTrackers
+    unset tempList
+
+    g_returnString=$expression
+}
+
+####################################################################################
+# evaluateTree (parsedTQLexpression [, currentNestingLevel])
+#
+# Traverses the parse tree of a TQL expression level-by-level in order of
+# operator precedence so that "smart" type analysis can be performed.
+# This function will evaluate the tree for a single choice of word expansions.
+# The choice is denoted by an array of indices at caller scope. (This is bash,
+# after all.) Typically, the caller will set these indices before invoking
+# this function or iterate over them and call this function repeatedly.
+####################################################################################
+function evaluateTree()
+{
+    local expression=$1 currentLevel=${2:-0}
+    declare -i retVal
+    local leftType rightType
+    local operatorToken="${tokenDelimiter}[0-9]+([${tt[COMPARATOR]}${tt[OPERATOR]}])$currentLevel([^${tokenDelimiter}]+)"
+    local spaceToken=${tokenDelimiter}${tt[SPACE]}
+    local leftParenToken=${tokenDelimiter}[0-9]+${tt[LEFT_PAREN]}[0-9]+
+    local rightParenToken=${tokenDelimiter}[0-9]+${tt[RIGHT_PAREN]}[0-9]+
+
+    # Find the "strongest" operator at the current level; divide there and recurse down both sides
+    local tempExpr=$expression
+    local currOperator operator operatorType leftSide rightSide
+    declare -i currStrength maxStrength
+    while [[ "$tempExpr" =~ ${operatorToken}(.*) ]]; do   # N.B. first parts of BASH_REMATCH are hidden in $operatorToken
+        currOperator=${BASH_REMATCH[2]}
+
+        # Heart of the maximization algorithm: Is the operator the strongest so far (or at least a tie)?
+        currStrength=${g_operatorStrength[$currOperator]}  # Look up the operator "strength"
+        if ((currStrength >= maxStrength)); then      # Compare with >= to favor equal operators further to the right;
+                                                      # this enforces left-associativity.
+            maxStrength=$currStrength
+
+            # Record the splitting information
+            leftSide=${expression%${BASH_REMATCH[0]}}
+            operator=$currOperator
+            operatorType=${BASH_REMATCH[1]}
+            rightSide=${BASH_REMATCH[3]}
+        fi
+
+        tempExpr=${BASH_REMATCH[3]}
+    done
+
+    # If an operator was found ...
+    if ((maxStrength > 0)); then
+
+        ######
+        # On both sides, clean up parenthesized subexpressions, recurse downward,
+        # and evaluate based on the finer-grained results
+        ######
+
+        # Left side: Check for parenthesization
+        if [[ $leftSide =~ (${spaceToken})*${leftParenToken}(.*)${rightParenToken}(${spaceToken})* ]]; then
+            # If it is parenthesized, strip the parens and evaluate the left side at the next nesting level
+            leftSide=${BASH_REMATCH[2]}
+            evaluateTree "$leftSide" $((currentLevel+1)); leftType=$g_returnString
+        else
+            # If it is not parenthesized, evaluate the left side at the same level
+            evaluateTree "$leftSide" $currentLevel; leftType=$g_returnString
+        fi
+
+        # If the expression is known to be invalid, jump up and out
+        if [[ $leftType == ${tt[INVALID_TYPE]} ]]; then
+            return $leftType
+        fi
+
+        # Repeat the above for the right side
+        if [[ $rightSide =~ (${spaceToken})*${leftParenToken}(.*)${rightParenToken}(${spaceToken})* ]]; then
+            rightSide=${BASH_REMATCH[2]}
+            evaluateTree "$rightSide" $((currentLevel+1)); rightType=$g_returnString
+        else
+            evaluateTree "$rightSide" $currentLevel; rightType=$g_returnString
+        fi
+        if [[ $rightType == ${tt[INVALID_TYPE]} ]]; then
+            return $rightType
+        fi
+
+        # Combine the types using the operator
+        lookupResultantType $leftType $operator $operatorType $rightType
+        return        # g_returnString will have just been set
+
+    else # No operator was found at the current level. This means we are left with either
+        # a function call, a solitary token of expandable type, or a primitive constant.
+        # Determine which of these holds by looking at the token type indicator.
+        local tokenNumber tokenType tokenValue
+        [[ "$expression" =~ ^${tokenDelimiter}([0-9]+)([^0-9])(.*) ]]
+        tokenNumber=${BASH_REMATCH[1]}
+        tokenType=${BASH_REMATCH[2]}
+        tokenValue=${BASH_REMATCH[3]}
+
+        case $tokenType in
+            ${tt[FUNCTION]})
+                # Recurse on the arguments to get their resolvent/aggregate types.
+                # Combine that with the function arity to look up the function and see its type.
+                #TODO Coming soon.
+                ;;
+            ${tt[EXPANDABLE_WORD]})
+                # Retrieve the type of the word from the candidate list.
+                # The token number tells us which candidate list.
+                declare -a columnList
+                local tempLine sqlType
+                for ((i=0; i < columnCount; i++)); do
+                    if ((tokenNumber == columnTokenIDs[i])); then
+                        tempList=(${columnLists[i]})
+                        tempLine=${tempList[listIndices[i]]}
+                        # Parse out the RDBMS type, convert to an internal type and return it
+                        [[ "$tempLine" =~ $delim2(.*)$delim2 ]]
+                        sqlType=${BASH_REMATCH[1]}
+                        sqlTypeToInternalType "$sqlType"
+                        return 0 # $g_returnString will have been set
+                    fi
+                done
+                ;;
+            ${tt[EXPANDABLE_SEQUENCE]})
+                #TODO Coming soon.
+                ;;
+            default)
+                # Any "normal" single token
+                g_returnString=$tokenType
+                return 0
+                ;;
+        esac
+    fi
+
+    return $ERR_INVALID_TYPE
+}
+
+####################################################################################
+# sqlTypeToInternalType (sqlType)
+#
+# Converts a SQL data type to an internal data type that captures distinctions of
+# interest and disregards the rest. The purpose is to map data types we can read
+# off the DB schema to patterns we can recognize with plain pattern matching
+# as with the internal token-typing system.
+#
+# N.B. To support additional RDBMS this function will need to be updated.
+# N.B. We choose to represent even data types we do not intend to implement.
+####################################################################################
+function sqlTypeToInternalType()
+{
+    local sqlType=${1,,}
+
+    # Note carefully which comparisons use the "==" sign and which use the "=~"
+    if [[ "$sqlType" =~ (int|^bool|^bit|^year) ]]; then
+        g_returnString=${tt[INTEGER]}
+    elif [[ "$sqlType" =~ (char|binary|enum) ]]; then   # char, varchar, binary
+        g_returnString=${tt[STRING_CONSTANT]}
+    elif [[ "$sqlType" =~ (^dec|^num|^double|^float|^fix) ]]; then
+        g_returnString=${tt[DECIMAL]}
+    elif [[ "$sqlType" == date ]]; then
+        g_returnString=${tt[DATE]}
+    elif [[ "$sqlType" == time ]]; then
+        g_returnString=${tt[TIME]}
+    elif [[ "$sqlType" =~ time ]]; then   # datetime and timestamp
+        g_returnString=${tt[TIMESTAMP]}
+    elif [[ "$sqlType" =~ (blob|text) ]]; then
+        g_returnString=${tt[BLOB]}
+    elif [[ "$sqlType" == set ]]; then
+        g_returnString=${tt[SET]}
+    else
+        g_returnString=${tt[INVALID_TYPE]}
+    fi
+}
+
+####################################################################################
+# lookupResultantType (type1, operator, operatorType, type2)
+#
+# Determines the resultant type of a binary operation applied to two objects
+# of the specified types, or returns an error code if the operation is not valid
+####################################################################################
+function lookupResultantType()
+{
+    declare -r type1=$1 operator=$2 operatorType=$3 type2=$4
+    local resultantType=${tt[INVALID_TYPE]}
+    local typeSchematicIndex
+
+    if [[ $operatorType == ${tt[COMPARATOR]} ]]; then
+        # Like types can always be compared. With the following shortcut, we avoid
+        # having to enumerate every combination of type and comparator separately.
+        if [[ "$type1" == "$type2" ]]; then
+            resultantType=${tt[INTEGER]}
+
+        # Other expressions involving comparators need to be looked up in
+        # the enumerative list.
+        else
+            typeSchematicIndex=$type1$operator$type2
+            declare -i i;     #TODO Move to tql_globals. Add a "j" too.
+            # Look for the above schematic among the array elements.
+            # The array is small, so linear search is fast enough.
+            for ((i=0; i < ${#g_compTypeResolutions[@]}; i++)); do
+                if [[ "$typeSchematicIndex" =~ ^${g_compTypeResolutions[$i]}$ ]]; then
+                    resultantType=${tt[INTEGER]}
+                    break
+                fi
+            done
+        fi
+
+    else
+        # Lookup the resultant type for this type schematic
+        typeSchematicIndex=$type1$operator$type2
+        resultantType=${g_opTypeResolutions[$typeSchematicIndex]}
+        # If there is no type for this schematic, look for a general schematic that fits
+        if [[ -z $resultantType ]]; then
+            typeSchematicIndex=$type1$regex_anyOperator$type2
+            resultantType=${g_opTypeResolutions[$typeSchematicIndex]}
+        fi
+        # An empty / nonexistent result indicates an illegal operation
+        : ${resultantType:=${tt[INVALID_TYPE]}}
+    fi
+
+    g_returnString=$resultantType
+}
+
+####################################################################################
+# expandFully abbreviation expansionList
+# Recursive helper function for expandAbbreviatedNames()
+####################################################################################
+function expandFully()
+{
+    if [[ -z $1 ]]; then
+        # Empty argument: Nothing (more) to expand. The recursion stops.
+        g_returnString=""
+        return
+    fi
+
+    local abbr="$1"
+    local retStr="$abbr"
+    local excepList newAbbr excepWords
+
+    OLDFS="$IFS"; IFS=$'\n' excepList=($2)
+    IFS="$OLDFS"
+
+    local didExpand=0
+
+    # Want to split the exception lines at whitespace.
+    for excepLine in "${excepList[@]}"; do
+        excepWords=($excepLine)
+
+        # Match the abbreviation against the zeroth word of the array element, which is the regex
+        if [[ $abbr =~ ${excepWords[0]} ]]; then
+
+            # Substitute and recurse. words[0] is the regex, words[1] is the replacement.
+            newAbbr=${abbr/${BASH_REMATCH[0]}/ ${excepWords[1]} }
+            didExpand=1
+
+            # Recursively expand the remaining pieces on the left and right sides
+            expandFully "${newAbbr%% *}" "$2"
+            retStr=$g_returnString
+            retStr+=" ${excepWords[1]} "
+            expandFully "${newAbbr##* }" "$2"
+            retStr+=$g_returnString
+            break
+        fi
+    done
+
+    if ((didExpand)); then
+        g_returnString=$retStr
+    else
+        g_returnString="."$abbr
+    fi
+}
+
+############################################################################################
+# getExpanded{Column,Table,Function}Names  tableList  abbreviatedName  [extraExpansionMacros]
+#
+# Given a list of tables and an abbreviation for a column, table, or function name,
+# these functions return a list of fully-spelled-out names matching that abbreviation,
+# along with some helpful descriptive information about each name in the list
+############################################################################################
+function getExpandedColumnNames()
+{
+    parserSetupCommand=setupColumnInfoParser
+    matchFinderCommand=generateColumnNameMatches
+    finalizeExpandedNameCommand=finalizeExpandedColumnName
+    _expand_substitutionMacros=$g_columnExpansionMacros
+
+    expandAbbreviatedName "$@"
+    return $?
+}
+
+function getExpandedTableNames()
+{
+    parserSetupCommand=setupTableInfoParser
+    matchFinderCommand=generateTableNameMatches
+    finalizeExpandedNameCommand=finalizeExpandedTableName
+    _expand_substitutionMacros=$g_tableExpansionMacros
+
+    expandAbbreviatedName "" "$@"    # $1 is for column-name expansion only
+    return $?
+}
+
+function getExpandedFunctionNames()
+{
+    parserSetupCommand=setupFunctionInfoParser
+    matchFinderCommand=generateFunctionNameMatches
+    finalizeExpandedNameCommand=finalizeExpandedFunctionName
+    _expand_substitutionMacros=$g_functionExpansionMacros
+
+    expandAbbreviatedName "" "$@"    # $1 is for column-name expansion only
+    return $?
+}
+
+############################################################################################
+# expandAbbreviatedName  tables  abbreviatedName  [extraExpansionMacros]
+# The workhorse function for the expand{Column,Table}Name functions above. This is a "private",
+# "base-class" function for this family of expander routines and should not be invoked by the outside world.
+#
+# Ultimately this function produces a fully expanded name or a list of names, given an abbreviated
+# name; plus a list of data types or other information.
+# The expansion is performed by converting the abbreviation into a regex and matching that
+# against the set of permissible full names.
+############################################################################################
+function expandAbbreviatedName()
+{
+    local nameAbbr=$2
+
+    local macroSubstitutionList="$3"$'\n'$_expand_substitutionMacros
+    local matchingName
+    local finalName finalType    # The return values. finalType is also used as an error indicator for bad input
+    declare -i numCandidates=0 abbrLength retVal=0
+
+    declare -a _expand_matchList
+    local      _expand_nameRegex
+    declare -a _expand_columnOffsets   # Parameters for parsing fixed-width strings
+    declare -a _expand_columnWidths
+
+    # Initialize the parser settings
+    $parserSetupCommand
+
+    unset _expand_matchList
+
+    ###########
+    # Try a few different regex-based matching techniques for the given abbreviation.
+    ###########
+
+#TODO If any matching technique returns at least one match, we forego the latter techniques. The result is rarely affected
+#TODO by this shortcut, but a really top-notch implementation would try all possibilities and prioritize.
+
+    ######
+    # Search #0: An old, simple technique no longer used: Post-saturate the abbreviated name with dot-asterisks
+    # e.g. aBcD becomes a.*B.*c.*D.*
+
+    ######
+    # Search #1: Apply the list of custom expansion rules to the given abbreviation
+
+    if ((numCandidates == 0)); then    # not necessary, but makes the code more readable / uniform.
+
+        # First create a sequence of words marked as either atomic or expandable.  (no mark -> atomic,  dot mark -> expandable)
+        set -f
+        expandFully "$nameAbbr" "$macroSubstitutionList"
+        _expand_nameRegex=$g_returnString
+
+        # If there are expandable abbreviations, work with them...
+        if [[ "$_expand_nameRegex" =~ (^| )[^.] ]]; then
+
+            # Patch together the full regex from the sequence of words:
+            #   - If a word was expanded (i.e. is not pre-pended with a dot), preserve it as-is.
+            #   - Else break it up letter-by-letter and transform lowercase letters into case-agnostic particles.
+            #   - Connect all resulting fragments with wildcards.
+
+            n=($_expand_nameRegex)
+            for ((i=0; i<${#n[@]}; i++)); do
+                if [[ ${n[i]} =~ ^\. ]]; then
+                    #n[i]=${n[i]:1}
+                    new[i]=${n[i]:1:1}".*"
+                    for ((l=2; l<${#n[i]}; l++)); do
+                        ltr=${n[i]:l:1}
+                        if [[ "$ltr" =~ [a-z] ]]; then
+                            new[i]+="["${ltr^^}$ltr"].*"
+                        else
+                            new[i]+=$ltr".*"
+                        fi
+                    done
+                else
+                    new[i]=${n[i]}".*"
+                fi
+            done
+
+            OLDFS=$IFS; IFS=""
+            _expand_nameRegex="${new[*]}"
+            IFS=$OLDFS
+
+            #TODO Move this out one level?
+            set +f
+
+            # Now we extract the matching entries from the full list of candidates
+            $matchFinderCommand   # Generates the initial list of matches
+            numCandidates=${#_expand_matchList[@]}
+        fi
+    fi  # end of the first expansion/match attempt
+
+    ######
+    # Search #2: Adjust the regex by post-saturating the abbreviated name with ".*"
+    # but treat capitals literally, smalls agnostically, and leading asterisks specially,
+    # and search; e.g. aBc becomes [Aa].*B.*[Cc].*   and   *aBcD becomes .*[Aa].*B.*[Cc].*D.*
+
+    if ((numCandidates == 0)); then
+
+        _expand_nameRegex=""; upper=${nameAbbr^^}
+        for ((i=0; i<${#nameAbbr}; i++)); do
+
+            # Leading asterisk ==> ".*"
+            if [[ $i == 0 && $nameAbbr =~ ^\* ]]; then
+                _expand_nameRegex+=.\*
+
+            # X ==> "X.*"
+            elif [[ ${nameAbbr:$i:1} == ${upper:$i:1} ]]; then
+                _expand_nameRegex+=${upper:i:1}".*"
+
+            # x ==> "[Xx].*"
+            else _expand_nameRegex+="["${upper:$i:1}${nameAbbr:$i:1}"].*"
+            fi
+        done
+
+        # Extract the matching entries from the full list of candidates, matching against the modified regex.
+        $matchFinderCommand
+        numCandidates="${#_expand_matchList[@]}"
+    fi
+
+    #####
+    # Search #3: If the abbreviation contains capitals, then the regex contains [A-Z]"." pairs. Relax these to mixed-case and try again.
+
+    if ((numCandidates == 0)); then
+        if [[ $nameAbbr =~ [A-Z] ]]; then
+            while [[ $_expand_nameRegex =~ ([A-Z][.]) ]]; do
+                newPart=${BASH_REMATCH[1]:0:1}
+                newPart="["$newPart${newPart,,}"]."
+                _expand_nameRegex=${_expand_nameRegex/${BASH_REMATCH[1]}/$newPart}
+            done
+
+            # Extract the matching entries from the full list of candidates, matching against the modified regex.
+            $matchFinderCommand
+            numCandidates="${#_expand_matchList[@]}"
+        fi
+    fi
+
+    # If all of the above techniques failed, return the abbreviation as-is and set an error code
+    if ((numCandidates == 0)); then
+        g_returnString=$nameAbbr${delim2}""
+        return 1
+    fi
+
+    # If any of the above techniques gave us a single definitive answer, then use it
+    if ((numCandidates == 1)); then
+        g_returnString=${_expand_matchList[0]//$delim/$delim2}   # Change the delimiting of the matchList pieces for convenience.
+        return 0
+
+    # If multiple matches turned up, address the ambiguity
+    elif ((numCandidates > 1)); then
+
+        local currCandidate
+        local candidateIndex=0
+        abbrLength=${#nameAbbr}
+        local k abbrCapitals
+        for ((k=0; k<abbrLength; k++)); do
+            if [[ ${nameAbbr:$k:1} =~ [A-Z] ]]; then
+                abbrCapitals+=${nameAbbr:$k:1}
+            fi
+        done
+        unset capitalMatchIndices
+        local capitalMatchesCount=0
+
+        # If one of the candidates is exactly the same as the "abbreviation" (i.e. it's not really an abbreviation), we will choose that one unconditionally.
+        # Otherwise, we pick out those candidates which are exact matches at the word boundaries.
+        for currCandidate in "${_expand_matchList[@]}"; do
+
+            matchingName=${currCandidate%%${delim}*}  # The name is the first field of the candidate record
+
+            # To detect exact matches it is enough to compare the lengths of the abbreviation and the matching candidate,
+            # since the match algorithm is monotone-expanding.
+            if [[ $abbrLength == ${#matchingName} ]]; then
+                g_returnString=${currCandidate//$delim/$delim2}
+                return 0
+            fi
+
+            # Identify non-exact matches which match exactly at the word boundaries (denoted by capital letters).
+            # This is our criterion when there are no perfect matches.
+            local j matchCapitals
+            for ((j=0; j<${#matchingName}; j++)); do
+                if [[ ${matchingName:$j:1} =~ [A-Z] ]]; then
+                    matchCapitals+=${matchingName:$j:1}
+                fi
+            done
+            if [[ "$abbrCapitals" == "$matchCapitals" ]]; then
+                ((capitalMatchIndices[capitalMatchesCount++] = candidateIndex))
+            fi
+
+            ((candidateIndex++))
+            unset matchCapitals
+        done
+
+        # If we get here, we have only true-abbreviations which match at the word boundaries ...
+        if ((capitalMatchesCount == 1)); then
+            g_returnString=${_expand_matchList[capitalMatchIndices[0]]//$delim/$delim2}
+            return 0
+
+        elif ((capitalMatchesCount > 1)); then
+            # Reduce the candidates list to the records which meet the word boundaries criterion
+            for ((candidateIndex=0; candidateIndex < capitalMatchesCount; candidateIndex++)); do
+                # Redelimit the fields with the secondary delimiter
+                _expand_matchList[candidateIndex]=${_expand_matchList[capitalMatchIndices[candidateIndex]]//$delim/$delim2}
+            done
+            while ((candidateIndex < numCandidates)); do
+                unset _expand_matchList[candidateIndex++]
+            done
+
+            # Redelimit the records with the primary delimiter
+            OLDFS=$IFS; IFS=$'\n'
+            g_returnString="${_expand_matchList[*]}"
+            IFS=$OLDFS
+            return 0
+
+        else # no matches.
+            g_returnString=$nameAbbr${delim2}""
+            return 2
+        fi
+    fi
+
+    return 0
+}
+
+#####################################################################################################
+# promptForExpansion  <abbreviation>  <expansions>
+# Given a list of candidate expansions, will run the user-interactive selection process
+# if the list contains multiple items
+#####################################################################################################
+function promptForExpansion()
+{
+    local abbreviation=$1
+    declare -a matchList
+
+    matchList=($2)
+
+    if [[ ${#matchList[@]} == 1 ]]; then
+        matchingLine=${matchList[0]}
+    else
+        # If we cannot identify a single "best" match, we ask the user to choose one from the list
+        echo Please enter a number for \"$1\": > /dev/stderr
+        select matchingName in ${matchList[@]%%$delim2*}; do    # Select the first column only
+            if [[ -z $matchingName ]]; then
+                # Keep trying until we get a response.
+                echo ERROR: Please choose a number from the list. > /dev/stderr
+            else
+                isArgOfType $REPLY integer    ## REPLY = special shell variable set by select
+                if (($?)); then
+                    matchingLine=${matchList[REPLY-1]}
+                    break
+                else
+                    echo Alphabetic entries: Feature not yet implemented. Ask about recursive expansion. > /dev/stderr
+                    # After the following recursive call, try the following:
+                    # local answer=$(expandColumnNames "$1" $REPLY)
+                    # finalNames[i] = answer line 1
+                    # finalCodes[i] = answer line 2
+                    # and jump to the next arg in the comma-separated list
+                fi
+            fi
+        done
+    fi
+
+    # Break out the name and data from the selected line
+#    $finalizeExpandedNameCommand "$matchingLine"
+    [[ $matchingLine =~ $delim2(.*)$delim2 ]]
+    local matchingType=${BASH_REMATCH[1]}
+    sqlTypeToInternalType $matchingType; local internalType=$g_returnString
+
+    g_returnString=$matchingName:$internalType
+    return 0
+}
+
+#####################################################################################################
+
+finalizeExpandedTableName()
+{
+    finalName="$1"
+    finalCode=""
+}
+
+finalizeExpandedColumnName()
+{
+    local record="${1//$delim2/$delim}"
+
+    [[ $record =~ $threeValueParser ]]
+    columnName=${BASH_REMATCH[1]}
+    columnDesc=${BASH_REMATCH[2]}
+    columnDefault=${BASH_REMATCH[3]}
+
+    setColumnCode $columnName $columnDesc $columnDefault
+
+    finalName=${g_returnString:3}
+    finalCode=${g_returnString:0:2}
+
+    g_returnString=$finalName
+}
+
+####################################################################################
+# loadTableDescription
+# Loads table information from a file (if it exists) or by querying the database
+####################################################################################
+function loadTableDescription()
+{
+    local tableDescFile=$1
+
+    # Try to read the table description from a file
+    if [[ -f $tableDescFile ]]; then
+        mapfile -t < $tableDescFile
+        OLDFS=$IFS; IFS=$'\n' g_masterColumnList="${MAPFILE[*]}"
+        IFS=$OLDFS
+
+    # Only query the DB if no cached file is available
+    else
+        g_masterColumnList=$(Desc "$TABLE_NAMES" +column_default -dontExpand)      # subshell because we're calling a script, not a function
+    fi
+}
+
+
+#####################################################################################################
+# generate{Table,Column}NameMatches <no args>
+# Compares a regex against a list of table or column names (with supporting information) to build a list of candidates
+#####################################################################################################
+function generateTableNameMatches()
+{
+    OLDFS=$IFS; IFS=$'\n'
+    i=0
+    for line in ${g_masterColumnList#*$'\n'};do   # Skip the list header
+
+        # If this table name (column 0 - the only column) matches the regex then take it, else skip this line
+        [[ ${line:${_expand_columnOffsets[0]}:${_expand_columnWidths[0]}} =~ ^($_expand_nameRegex) ]]
+        if [[ $? != 0 ]]; then continue; fi
+        _expand_matchList[i]+=${BASH_REMATCH[1]%% *}  # Strip trailing spaces
+        ((i++))
+    done
+    IFS=$OLDFS
+}
+
+function generateColumnNameMatches()
+{
+    # Using the name regex, pull the matching column names plus their type descriptions and default values from the full table description
+    # TODO For now we will ignore the first column, the table name. In a multi-table scenario we would need it.
+
+    OLDFS=$IFS; IFS=$'\n'
+    i=0
+    for line in ${g_masterColumnList#*$'\n'}; do  # Skip the list header
+
+        # Speedup by ruling out non-first-letter matches? Havent tested this:
+        #[[ ${_expand_nameRegex:1:2} =~ ${line:${_expand_columnOffsets[1]}:1} ]]    # et cetera
+
+        # If column 2, the column name, matches the regex then take it, else skip this line
+        [[ ${line:${_expand_columnOffsets[1]}:${_expand_columnWidths[1]}} =~ ^($_expand_nameRegex) ]]
+        if [[ $? != 0 ]]; then continue; fi
+        _expand_matchList[i]+=${BASH_REMATCH[1]%% *}  # Strip trailing spaces
+
+        # Take the first word of column 3, the column type. (We sometimes have "int(n) unsigned" but we want just "int(n)".)
+        col=${line:${_expand_columnOffsets[2]}:${_expand_columnWidths[2]}}}
+        _expand_matchList[i]+=$delim${col%% *}
+
+        # Take column 4, the column default and do not throw out empty strings
+        col=${line:${_expand_columnOffsets[3]}}
+        _expand_matchList[i]+=$delim${col%% *} # Strip trailing spaces
+        ((i++))
+    done
+    IFS=$OLDFS
+}
+
+#####################################################################################################
+# setup{Table,Column}InfoParser  <no arguments>
+# Helper functions for expandAbbreviatedNames
+#####################################################################################################
+function setupTableInfoParser()
+{
+    unset _expand_columnOffsets _expand_columnWidths
+
+    # A table names list is a single column listing the table names. Compare to the columns list which has several columns.
+    [[ ${g_masterColumnList:1} =~ .([^$'\n']*)$'\n' ]]
+    _expand_columnOffsets[0]=1                      # one space in front
+    _expand_columnWidths[0]=${#BASH_REMATCH[1]}     # distance to end of line
+}
+
+function setupColumnInfoParser()
+{
+    unset _expand_columnOffsets _expand_columnWidths
+
+    # A column list is multi-column and lists the column names and information about them.
+    # Since we will use the fact that the list is fixed width, let's figure out the column offsets
+    [[ ${g_masterColumnList:11} =~ ^((([ ]+)column_name[ ]+)column_type[ ]+)column_default ]]
+    _expand_columnOffsets[0]=1                                # table_name's offset
+    _expand_columnOffsets[1]=$((11+${#BASH_REMATCH[3]}))      # add 11 to account for " "table_name in front
+    _expand_columnOffsets[2]=$((11+${#BASH_REMATCH[2]}))
+    _expand_columnOffsets[3]=$((11+${#BASH_REMATCH[1]}))
+    _expand_columnWidths[0]=$((_expand_columnOffsets[1]-_expand_columnOffsets[0]))
+    _expand_columnWidths[1]=$((_expand_columnOffsets[2]-_expand_columnOffsets[1]))
+    _expand_columnWidths[2]=$((_expand_columnOffsets[3]-_expand_columnOffsets[2]))
+    #_expand_columnWidths[3]=$((${distance to '\n'}-_expand_columnOffsets[3]))
+}
+
+#####################################################################################################
+# setColumnCode  columnName  columnTypeDesc  columnDefault
+# Given some basic column information, returns a specially-encoded two-character description of the column
+# This is used e.g. to indicate whether a column's non-NULL values need quoting
+#####################################################################################################
+function setColumnCode()
+{
+    local columnName=$1
+    local columnDesc=$2
+    local columnDefault=$3
+    local columnCode
+
+    # Convert the column description into a code for subsequent processing
+    # Currently we use a two-character code: a quote indicator followed by a detail indicator
+
+    local numericDescRegex="(int)|(^decimal)"
+    if [[ "$columnDesc" =~ $numericDescRegex ]]; then
+
+        # Pick out floats (non-integer numerics) -- i.e., descs that match "decimal" not "int"
+        if [[ -n ${BASH_REMATCH[2]} ]]; then
+            columnCode=0f         # meaning: do not quote, and is a floating point value
+
+        # Pick out "secret" booleans
+        elif [[ ( $columnDesc == "tinyint(1)" && "$columnDefault" =~ ^[01]$ ) || ( $columnDesc =~ smallint && "$columnDefault" == 1) ]]; then
+            columnCode=01         # meaning: do not quote, and is a 0-1 boolean
+
+        # Pick out "true" integer types
+        else
+            columnCode=0i         # meaning: do not quote, and is an integer value
+        fi
+    else
+        if [[ $columnDesc == "char(1)" && "$columnDefault" =~ ^[tf]$ ]]; then
+            columnCode=qt         # meaning: quote it, and is a t-f boolean
+        elif [[ $columnDesc == timestamp ]]; then
+            columnCode=qs         # meaning: quote it, and is a timestamp
+        elif [[ $columnDesc == blob ]]; then
+            columnCode=qb         # meaning: it is a blob; quoting is n/a, just use q for consistency, and represent it as NULL-or-not
+            columnName="IF("${columnName}" IS NULL, 'NULL', '<blob>') as "${columnName}
+        else
+            columnCode=qa         # meaning: quote it, and is a regular alphabetic (symbolic, etc.) value
+        fi
+    fi
+
+    g_returnString=$columnCode:$columnName
+}
+
