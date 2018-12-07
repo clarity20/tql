@@ -2,10 +2,11 @@
 TQL is a software library that makes working with relational databases *massively*
 easier than writing and running conventional SQL. If you run *lots* of queries
 and you don't want to sweat the SQL, then TQL is the query language for you.
-TQL is more concise *and* less fussy about query semantics you *don't* want to
-have to think about! So let your machine puzzle it out. (Say goodbye to HAVING
-clauses forever!) And if you'd love to ditch your GUI-based DB client in favor
-of a more integrated workspace, TQL is for you!
+TQL is more concise *and* less fussy about query semantics you shouldn't *have to*
+think about in the first place! Just write what make sense and let your machine
+puzzle it out. (And never sweat the HAVING clause again!) And if you'd love to
+ditch your GUI-based DB client in favor of a more integrated workspace, TQL is
+for you!
 
 TQL's natural home is at your \*NIX command prompt but it can be embedded anywhere a
 command can be typed and run.
@@ -33,15 +34,15 @@ humble beginnings.
 _*The guided tour: Coming soon*_
 
 ### Auto-execution mode
-To run TQL with query execution turned on (the default behavior), you must set up the
-following three (3) items. We illustrate with a quick example:
+To run TQL with query execution turned on (the default behavior), you need the
+following:
 1. a TUI program capable of submitting SQL queries to your RDBMS. For MySQL
 users, this typically means the "mysql" binary bundled with MySQL.
-2. a small wrapper script or shell function for the binary that either knows
+2. a small wrapper script or shell function for item #1 that either knows
 or figures out the database connection parameters (user name, password, host,
 and database name) so that TQL doesn't have to.
 3. two environment variables: `TQL_DB_WRAPPER` to identify your wrapper
-script and another, `TQL_DBNAME` to identify your database.
+script and `TQL_DBNAME` to identify your database.
 
 *Example*: Your wrapper script might look like the following:
 
@@ -65,7 +66,7 @@ for growth in all directions:
 - adding other dialects of SQL to the TQL-compatibility family
 and of course,
 - improving the documentation.
-###### (and did I mention porting the system to a more suitable language?)
+###### (and did I mention upgrading the system to a more suitable language?)
 
 Bug reports and fixes are always welcome.
 We plan on setting up a conventional list of open items on the Issues page in the near future.
