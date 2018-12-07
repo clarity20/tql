@@ -75,7 +75,18 @@ g_opTypeResolutions=(
 [${tt[DECIMAL]}${regex_anyOperator}${tt[DECIMAL]}]=${tt[DECIMAL]}
 [${tt[INTEGER]}${regex_anyOperator}${tt[DECIMAL]}]=${tt[DECIMAL]}
 [${tt[DECIMAL]}${regex_anyOperator}${tt[INTEGER]}]=${tt[INTEGER]}
+[${tt[STRING_CONSTANT]}"+"${tt[STRING_CONSTANT]}]=${tt[STRING_CONSTANT]}
 [${tt[DATE]}"+"${tt[INTEGER]}]=${tt[DATE]}
+[${tt[DATE]}"-"${tt[INTEGER]}]=${tt[DATE]}
+)
+
+# Define the "regular" transformations where a binary operator is rendered as a binary function.
+# We can implement other, "irregular" transformations inline.
+declare -A g_transformationTemplates
+g_transformationTemplates=(
+[${tt[STRING_CONSTANT]}"+"${tt[STRING_CONSTANT]}]=CONCAT
+[${tt[DATE]}"+"${tt[INTEGER]}]=DATE_ADD
+[${tt[DATE]}"-"${tt[INTEGER]}]=DATE_SUB
 )
 
 # Lists of substitution macros used to expand possibly-abbreviated names of columns or tables
@@ -96,6 +107,10 @@ g_tableExpansionMacros=\
 #   2. Uses type-based rules of grammar and syntax to eliminate infeasible candidates
 #   3. Solicits user input when two or more candidates are feasible choices, and
 #      reruns step 2 if necessary
+#
+# This function also determines the "transformability" of the expression, resolving to
+# a final assessment at the end of step 3. This is not part of smart expansion per se,
+# but we do it here to take advantage of certain aspects of the smart expansion code.
 ####################################################################################
 function smartExpandExpression()
 {
@@ -161,14 +176,27 @@ function smartExpandExpression()
 
     declare -ai listIndices       # mechanism of iteration over all possible expansions
     declare -i startingIndex=0     # the coordinate at which to start iterating
-    declare -a feasibilityTrackers # the expansion choices for which a feasible context exists
+    declare -a feasibilityTrackers # the expansion choices for which a feasible interpretation exists
+    declare -i successCount=0      # How many equivalence classes of feasible choices are found?
+    declare -i j k   #TODO Make these global
 
+    # expression signatures, in the singular and in the plural
+    declare -a typeSignature transformSignature typeSignatures transformSignatures
+    declare -i transformCount=0
+    declare -a chosenTypeSignature chosenTransformSignature
+
+    # Run the iteration repeatedly until all expandables have been examined
     while ((startingIndex < expansionCount)); do
+        # Initialize the iteration
         for ((whichIndex = startingIndex; whichIndex < expansionCount; whichIndex++)); do
             listIndices[whichIndex]=0
-            feasibilityTrackers[listOffests[whichIndex]+listIndices[whichIndex]]=0
         done
+        for ((i=listOffsets[startingIndex]; i<accumulator; i++)); do
+            feasibilityTrackers[i]=0
+        done
+        # Enter the controlling loop that cycles over all iterates
         while (($TRUE)); do
+
             # Point the incrementer to the last index
             ((whichIndex = expansionCount-1))
 
@@ -178,24 +206,60 @@ function smartExpandExpression()
                 ((whichIndex--))
                 if ((whichIndex < startingIndex)); then break; fi
             done
-            if ((whichIndex < startingIndex)); then break; fi
 
-            # EXECUTE THE ALGORITHM ON THIS ITERATE:
-            # Use the lexical structure of the expression to determine whether the combination
-            # of choices which the current iterate represents is grammatically permissible
-            evaluateTree "$expression"
+            # The "type isomorphism" optimization: Run the algorithm on this iterate only if
+            # the iterate's underlying type signature is one that we have not already encountered
+            if ((feasibilityTrackers[listOffsets[whichIndex]+listIndices[whichIndex]] == 0)); then
+                transformCount=0
 
-            # Record whether the tree evaluated successfully, i.e. the combination is permitted
-            if [[ $? != $ERR_INVALID_TYPE ]]; then
-                # Set the feasibility markers for this node
-                for ((i=startingIndex; i<expansionCount; i++)); do
-                    # The markers are seated at the positions of the coordinates in the flattened list
-                    # The index will be the (i)th listOffset + the value at the (i)th inflated coordinate
-                    ((feasibilityTrackers[listOffsets[i]+listIndices[i]]++))
-                done
+                # EXECUTE THE ALGORITHM ON THIS ITERATE:
+                # Use the lexical structure of the expression to determine whether the combination
+                # of choices which the current iterate represents is grammatically permissible
+                evaluateTree "$expression"
+
+                # Record whether the tree evaluated successfully, i.e. the combination is permitted
+                if [[ $? != $ERR_INVALID_TYPE ]]; then
+                    # Set the feasibility markers for this node, coordinate by coordinate
+                    for ((i=startingIndex; i<expansionCount; i++)); do
+
+                        # The markers are seated at the positions of the coordinates in the flattened list
+                        # The index will be the (i)th listOffset + the value at the (i)th inflated coordinate
+                        ((feasibilityTrackers[listOffsets[i]+listIndices[i]]++))
+
+                        # The "type isomorphism" optimization: Mark as feasible any other choices
+                        # having the same data types, so we can skip the general algorithm for those choices
+                        tempList=(${expansionLists[i]})
+                        for ((j=listIndices[i]+1; j<listLengths[i]; j++)); do
+                            # Fetch the type of the j-th option
+                            local tempLine=${tempList[j]}
+                            # Parse out the RDBMS type, convert to an internal type
+                            [[ "$tempLine" =~ $delim2(.*)$delim2 ]]
+                            local dataType=${BASH_REMATCH[1]}
+                            sqlTypeToInternalType "$dataType"; dataType=$g_returnString
+                            # If the type of the coordinate matches the current type, mark the feasibility
+                            if [[ ${typeSignature[i]} == $dataType ]]; then
+                                ((feasibilityTrackers[listOffsets[i]+j]++))
+                            fi
+                        done
+                    done
+
+                    # During the first iteration set, establish the correspondence
+                    # between type signatures and transformation signatures
+                    if ((startingIndex == 0)); then
+                        # Record the two signatures
+                        typeSignatures[successCount]="${typeSignature[@]}"      # space-delimit by flattening
+                        transformSignatures[successCount]="${transformSignature[@]}"
+                        ((successCount++))
+                    fi
+                fi
+
+                # Clear the temporaries whether or not the iteration succeeeded
+                unset transformSignature typeSignature
             fi
 
-            # Adjust the index and the trailer
+            # Enforce the iteration's termination condition
+            if ((whichIndex < startingIndex)); then break; fi
+            # Advance the iteration tuple to the lexicographically-next value
             ((listIndices[whichIndex]++))
             for ((whichIndex+=1; whichIndex<expansionCount; whichIndex++)); do
                 listIndices[whichIndex]=0
@@ -204,7 +268,6 @@ function smartExpandExpression()
 
         # The iteration is complete. Time to apply our analysis of the current coordinate
         # by pruning the lists of candidates.
-        declare -i j k   #TODO Make these global
 
         # Walk this and the following coordinates
         for ((i=startingIndex; i<expansionCount; i++)); do
@@ -219,7 +282,7 @@ function smartExpandExpression()
                 fi
             done
 
-            # Compress what was deleted
+            # Remove the records being deleted
             for ((; k<listLengths[i]; k++)); do
                 unset tempList[k]
             done
@@ -235,14 +298,27 @@ function smartExpandExpression()
         promptForExpansion "${shortNames[startingIndex]}" "${expansionLists[startingIndex]}"
         expandedName=${g_returnString%:*}
         local internalType=${g_returnString#$expandedName:}
+        chosenTypeSignature[startingIndex]=$internalType
 
-        # Reconstruct the expression with the full name, "word" indicator, and internal type filled in
-        [[ "$expression" =~ (.*${tokenDelimiter}[0-9]+[$g_expandableTypes])(${shortNames[$startingIndex]})(.*) ]]
-        expression=${BASH_REMATCH[1]}$internalType$expandedName${BASH_REMATCH[3]}
+        # Reconstruct the expression with the full name, "word" type indicator, and internal type filled in
+        [[ "$expression" =~ (.*${tokenDelimiter}[0-9]+)([$g_expandableTypes])(${shortNames[$startingIndex]})(.*) ]]
+        expression=${BASH_REMATCH[1]}${BASH_REMATCH[2],,}$internalType$expandedName${BASH_REMATCH[4]}
 
         # Repeat until all necessary user selections have been made
         ((startingIndex++))
     done
+
+    # Look up the current type signature in the list. By joining to the list of transformation signatures
+    # we obtain the effective transformation signature, which is our ultimate goal
+    local flatSignature="${chosenTypeSignature[@]}"
+    for ((i=0; i<successCount; i++)); do
+        if [[ ${typeSignatures[i]} == ${flatSignature} ]]; then
+            chosenTransformSignature=${transformSignatures[i]}
+            break
+        fi
+    done
+
+    unset chosenTypeSignature typeSignatures transformSignatures
 
     unset columnLists sequenceLists functionLists expansionLists listIndices listRanges
     unset columnIndices sequenceIndices functionIndices expansionIndices shortNames
@@ -254,20 +330,26 @@ function smartExpandExpression()
 
 ####################################################################################
 # evaluateTree (parsedTQLexpression [, currentNestingLevel])
+#    Returns a boolean type validity indicator
+#    Sets the global string to the actual type (if the type is valid)
 #
 # Traverses the parse tree of a TQL expression level-by-level in order of
 # operator precedence so that "smart" type analysis can be performed.
 # This function will evaluate the tree for a single choice of word expansions.
-# The choice is denoted by an array of indices at caller scope. (This is bash,
-# after all.) Typically, the caller will set these indices before invoking
+# The choice is denoted by an array of indices at caller scope.
+# Typically, the caller will set these indices before invoking
 # this function or iterate over them and call this function repeatedly.
+#
+# To take advantage of the tree traversal that this function implements, this
+# function also makes a record of any "transformable" semantic constructs that
+# occur in the input expression.
 ####################################################################################
 function evaluateTree()
 {
     local expression=$1 currentLevel=${2:-0}
     declare -i retVal
     local leftType rightType
-    local operatorToken="${tokenDelimiter}[0-9]+([${tt[COMPARATOR]}${tt[OPERATOR]}])$currentLevel([^${tokenDelimiter}]+)"
+    local operatorToken="${tokenDelimiter}([0-9]+)([${tt[COMPARATOR]}${tt[OPERATOR]}])$currentLevel([^${tokenDelimiter}]+)"
     local spaceToken=${tokenDelimiter}${tt[SPACE]}
     local leftParenToken=${tokenDelimiter}[0-9]+${tt[LEFT_PAREN]}[0-9]+
     local rightParenToken=${tokenDelimiter}[0-9]+${tt[RIGHT_PAREN]}[0-9]+
@@ -275,9 +357,9 @@ function evaluateTree()
     # Find the "strongest" operator at the current level; divide there and recurse down both sides
     local tempExpr=$expression
     local currOperator operator operatorType leftSide rightSide
-    declare -i currStrength maxStrength
+    declare -i currStrength maxStrength operatorTokenId
     while [[ "$tempExpr" =~ ${operatorToken}(.*) ]]; do   # N.B. first parts of BASH_REMATCH are hidden in $operatorToken
-        currOperator=${BASH_REMATCH[2]}
+        currOperator=${BASH_REMATCH[3]}
 
         # Heart of the maximization algorithm: Is the operator the strongest so far (or at least a tie)?
         currStrength=${g_operatorStrength[$currOperator]}  # Look up the operator "strength"
@@ -288,11 +370,12 @@ function evaluateTree()
             # Record the splitting information
             leftSide=${expression%${BASH_REMATCH[0]}}
             operator=$currOperator
-            operatorType=${BASH_REMATCH[1]}
-            rightSide=${BASH_REMATCH[3]}
+            operatorTokenId=${BASH_REMATCH[1]}
+            operatorType=${BASH_REMATCH[2]}
+            rightSide=${BASH_REMATCH[4]}
         fi
 
-        tempExpr=${BASH_REMATCH[3]}
+        tempExpr=${BASH_REMATCH[4]}
     done
 
     # If an operator was found ...
@@ -307,10 +390,10 @@ function evaluateTree()
         if [[ $leftSide =~ (${spaceToken})*${leftParenToken}(.*)${rightParenToken}(${spaceToken})* ]]; then
             # If it is parenthesized, strip the parens and evaluate the left side at the next nesting level
             leftSide=${BASH_REMATCH[2]}
-            evaluateTree "$leftSide" $((currentLevel+1)); leftType=$g_returnString
+            evaluateTree "$leftSide" $((currentLevel+1)); leftType=${g_returnString%;*}
         else
             # If it is not parenthesized, evaluate the left side at the same level
-            evaluateTree "$leftSide" $currentLevel; leftType=$g_returnString
+            evaluateTree "$leftSide" $currentLevel; leftType=${g_returnString%:*}
         fi
 
         # If the expression is known to be invalid, jump up and out
@@ -321,23 +404,43 @@ function evaluateTree()
         # Repeat the above for the right side
         if [[ $rightSide =~ (${spaceToken})*${leftParenToken}(.*)${rightParenToken}(${spaceToken})* ]]; then
             rightSide=${BASH_REMATCH[2]}
-            evaluateTree "$rightSide" $((currentLevel+1)); rightType=$g_returnString
+            evaluateTree "$rightSide" $((currentLevel+1)); rightType=${g_returnString%:*}
         else
-            evaluateTree "$rightSide" $currentLevel; rightType=$g_returnString
+            evaluateTree "$rightSide" $currentLevel; rightType=${g_returnString%:*}
         fi
         if [[ $rightType == ${tt[INVALID_TYPE]} ]]; then
             return $rightType
         fi
 
-        # Combine the types using the operator
-        lookupResultantType $leftType $operator $operatorType $rightType
-        return        # g_returnString will have just been set
+        # Determine the aggregate/resultant type and identify transformations
+        lookupResultantTypeAndTrans $leftType $operator $operatorType $rightType
+        local resultantType=${g_returnString%:*}
+        local transformation=${g_returnString#*:}
+        # Return instantly if the type is invalid
+        if [[ $resultantType == ${tt[INVALID_TYPE]} ]]; then
+            return $resultantType
+        fi
+
+        # If there are transformations, append bounding information
+        declare -i leftmostTokenId rightmostTokenId
+        if [[ -n $transformation ]]; then
+            [[ $leftSide =~ $tokenDelimiter([0-9]+) ]]
+            leftmostTokenId=${BASH_REMATCH[1]}
+            [[ $rightSide =~ (.*)$tokenDelimiter([0-9]+) ]]
+            rightmostTokenId=${BASH_REMATCH[2]}
+            transformation+="."$operatorTokenId
+            transformation+="."$leftmostTokenId
+            transformation+="."$rightmostTokenId
+            transformSignature[transformCount++]=$transformation
+        fi
+        g_returnString=$resultantType
+        return 0
 
     else # No operator was found at the current level. This means we are left with either
         # a function call, a solitary token of expandable type, or a primitive constant.
         # Determine which of these holds by looking at the token type indicator.
         local tokenNumber tokenType tokenValue
-        [[ "$expression" =~ ^${tokenDelimiter}([0-9]+)([^0-9])(.*) ]]
+        [[ "$expression" =~ ^${tokenDelimiter}([0-9]+)[$g_expandedTypes]?([^0-9])(.*) ]]
         tokenNumber=${BASH_REMATCH[1]}
         tokenType=${BASH_REMATCH[2]}
         tokenValue=${BASH_REMATCH[3]}
@@ -346,21 +449,22 @@ function evaluateTree()
             ${tt[FUNCTION]})
                 # Recurse on the arguments to get their resolvent/aggregate types.
                 # Combine that with the function arity to look up the function and see its type.
-                #TODO Coming soon.
+                #TODO Coming soon. We would loop from columnCount+sequenceCount to expansionCount-1.
                 ;;
             ${tt[EXPANDABLE_WORD]})
                 # Retrieve the type of the word from the candidate list.
                 # The token number tells us which candidate list.
-                declare -a columnList
+                declare -a tempList
                 local tempLine sqlType
                 for ((i=0; i < columnCount; i++)); do
-                    if ((tokenNumber == columnTokenIDs[i])); then
-                        tempList=(${columnLists[i]})
+                    if ((tokenNumber == expansionTokenIDs[i])); then
+                        tempList=(${expansionLists[i]})
                         tempLine=${tempList[listIndices[i]]}
                         # Parse out the RDBMS type, convert to an internal type and return it
                         [[ "$tempLine" =~ $delim2(.*)$delim2 ]]
                         sqlType=${BASH_REMATCH[1]}
                         sqlTypeToInternalType "$sqlType"
+                        typeSignature[i]=$g_returnString
                         return 0 # $g_returnString will have been set
                     fi
                 done
@@ -368,8 +472,8 @@ function evaluateTree()
             ${tt[EXPANDABLE_SEQUENCE]})
                 #TODO Coming soon.
                 ;;
-            default)
-                # Any "normal" single token
+            *)
+                # Default behavior: A single, normal token or already-expanded token
                 g_returnString=$tokenType
                 return 0
                 ;;
@@ -417,18 +521,22 @@ function sqlTypeToInternalType()
 }
 
 ####################################################################################
-# lookupResultantType (type1, operator, operatorType, type2)
+# lookupResultantTypeAndTrans (type1, operator, operatorType, type2)
 #
 # Determines the resultant type of a binary operation applied to two objects
-# of the specified types, or returns an error code if the operation is not valid
+# of the specified types, and a type id of the applicable transformation, if any.
+#
+# Returns an error code if the operation is not valid
 ####################################################################################
-function lookupResultantType()
+function lookupResultantTypeAndTrans()
 {
     declare -r type1=$1 operator=$2 operatorType=$3 type2=$4
     local resultantType=${tt[INVALID_TYPE]}
-    local typeSchematicIndex
+    local operatorSchematic transformation
 
     if [[ $operatorType == ${tt[COMPARATOR]} ]]; then
+        transformation=""
+
         # Like types can always be compared. With the following shortcut, we avoid
         # having to enumerate every combination of type and comparator separately.
         if [[ "$type1" == "$type2" ]]; then
@@ -437,12 +545,12 @@ function lookupResultantType()
         # Other expressions involving comparators need to be looked up in
         # the enumerative list.
         else
-            typeSchematicIndex=$type1$operator$type2
+            operatorSchematic=$type1$operator$type2
             declare -i i;     #TODO Move to tql_globals. Add a "j" too.
             # Look for the above schematic among the array elements.
             # The array is small, so linear search is fast enough.
             for ((i=0; i < ${#g_compTypeResolutions[@]}; i++)); do
-                if [[ "$typeSchematicIndex" =~ ^${g_compTypeResolutions[$i]}$ ]]; then
+                if [[ "$operatorSchematic" =~ ^${g_compTypeResolutions[$i]}$ ]]; then
                     resultantType=${tt[INTEGER]}
                     break
                 fi
@@ -450,19 +558,23 @@ function lookupResultantType()
         fi
 
     else
-        # Lookup the resultant type for this type schematic
-        typeSchematicIndex=$type1$operator$type2
-        resultantType=${g_opTypeResolutions[$typeSchematicIndex]}
+        # Lookup the resultant type and transformation (if any) for this type schematic
+        operatorSchematic=$type1$operator$type2
+        resultantType=${g_opTypeResolutions[$operatorSchematic]}
+        transformation=${g_transformationTemplates[$operatorSchematic]}
         # If there is no type for this schematic, look for a general schematic that fits
         if [[ -z $resultantType ]]; then
-            typeSchematicIndex=$type1$regex_anyOperator$type2
-            resultantType=${g_opTypeResolutions[$typeSchematicIndex]}
+            operatorSchematic=$type1$regex_anyOperator$type2
+            resultantType=${g_opTypeResolutions[$operatorSchematic]}
         fi
         # An empty / nonexistent result indicates an illegal operation
         : ${resultantType:=${tt[INVALID_TYPE]}}
     fi
 
-    g_returnString=$resultantType
+    g_returnString=$resultantType":"
+    if [[ -n $transformation ]]; then
+        g_returnString+=$transformation
+    fi
 }
 
 ####################################################################################
@@ -785,12 +897,14 @@ function expandAbbreviatedName()
 function promptForExpansion()
 {
     local abbreviation=$1
+    local matchingName matchingLine
     declare -a matchList
 
     matchList=($2)
 
     if [[ ${#matchList[@]} == 1 ]]; then
         matchingLine=${matchList[0]}
+        matchingName=${matchingLine%%$delim2*}
     else
         # If we cannot identify a single "best" match, we ask the user to choose one from the list
         echo Please enter a number for \"$1\": > /dev/stderr
@@ -799,8 +913,7 @@ function promptForExpansion()
                 # Keep trying until we get a response.
                 echo ERROR: Please choose a number from the list. > /dev/stderr
             else
-                isArgOfType $REPLY integer    ## REPLY = special shell variable set by select
-                if (($?)); then
+                if [[ "$REPLY" =~ ^[0-9]+$ ]]; then     ## REPLY = special shell variable set by select
                     matchingLine=${matchList[REPLY-1]}
                     break
                 else
@@ -910,7 +1023,7 @@ function generateColumnNameMatches()
         _expand_matchList[i]+=${BASH_REMATCH[1]%% *}  # Strip trailing spaces
 
         # Take the first word of column 3, the column type. (We sometimes have "int(n) unsigned" but we want just "int(n)".)
-        col=${line:${_expand_columnOffsets[2]}:${_expand_columnWidths[2]}}}
+        col=${line:${_expand_columnOffsets[2]}:${_expand_columnWidths[2]}}
         _expand_matchList[i]+=$delim${col%% *}
 
         # Take column 4, the column default and do not throw out empty strings

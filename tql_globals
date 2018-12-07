@@ -1,4 +1,4 @@
-# vim:filetype=sh:fdm=marker:
+# vim:filetype=sh:
 
 declare -r TRUE=1
 declare -r FALSE=0
@@ -20,8 +20,8 @@ tt=(
     [DATE]='D'
     [DATE_RANGE]='d'
     [FORCED_EXPANSION]='E'    # An expandable word that the user has marked with the variable indicator
-    [FUNCTION]='F'
-    [DECIMAL]='f' [FLOAT]='f' # Let DECIMAL and FLOAT be synonyms
+    [FUNCTION]='F'    [EXPANDED_FUNCTION]='f'    # EXPANDEDs must be the lowercase of their partners
+    [DECIMAL]='g'     [FLOAT]='g' # Let DECIMAL and FLOAT be synonyms
     [INTEGER]='I'
     [INT_RANGE]='i'
     [FLOAT_LIST]='L'
@@ -37,11 +37,11 @@ tt=(
     [STRING_CONSTANT]='V'
 
     # A word that might be a string constant or an abbreviated variable name:
-    [EXPANDABLE_WORD]='W'
+    [EXPANDABLE_WORD]='W'    [EXPANDED_WORD]='w'
 
     # A sequence of words that might be expandable according to special rules,
     # for handling special intra-query constructs such as DISTINCT and INTERVAL:
-    [EXPANDABLE_SEQUENCE]='X'
+    [EXPANDABLE_SEQUENCE]='X'    [EXPANDED_SEQUENCE]='x'
 
     [FILENAME]='@'
     [BEGIN_GROUP]='('  [LEFT_PAREN]='('
@@ -59,6 +59,7 @@ tt=(
 )
 
 declare -r g_expandableTypes=${tt[EXPANDABLE_WORD]}${tt[EXPANDABLE_SEQUENCE]}${tt[FUNCTION]}
+declare -r g_expandedTypes=${tt[EXPANDED_WORD]}${tt[EXPANDED_SEQUENCE]}${tt[EXPANDED_FUNCTION]}
 
 # Error/status codes
 declare -ri ERR_INVALID_TYPE=${tt[INVALID_TYPE]}   # Converts ${tt[INVALID_TYPE]} to a number
