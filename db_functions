@@ -4,7 +4,7 @@
 : ${BASHFUNC_HOME:=$HOME}
 : ${TQL_HOME:=$HOME/tql}
 # Override the PATH with the locations of this project installation and your GNU/Linux coreutils
-# TODO Clarify which versions of which utilities are required. Strive for POSIX compatibility.
+# TODO Clarify which versions of which utilities are required. Verify POSIX compatibility.
 PATH=$TQL_HOME:$BASHFUNC_HOME/bin:/usr/local/bin:/usr/bin
 
 # Enable extended file globbing. This allows us to write shorter, simpler code in a few places.
@@ -16,18 +16,16 @@ if ((g_sourcedGlobals!=1)); then
     g_sourcedGlobals=1
 fi
 
-# TODO Phase this out; bring isArgOfType into the sqlUtils code
+# TODO Phase this out; bring isArgOfType into the main code
 source $TQL_HOME/script_functions
 
 source $TQL_HOME/expand_functions
 
-# TODO Phase in the following idea more comprehensively, and add a mnemonic/convention for CONSTant values.
-# Introduce some variable naming conventions to compensate for BASH's shortcomings with respect to scoping.
-# The intention is to maximize readability and maintainability and to minimize shadowing bugs.
+# TODO Consider introducing some variable naming conventions for better readability
+# and to minimize shadowing bugs.
 # (1) Use the prefix g_ to mean "global".
 # (2) Use the form "_varName_funcAbbr" for variables local to the indicated function
 #     and everything lower in the call stack, and used in both.
-# (3) Otherwise, variable names follow no explicit convention.
 
 declare -r delim=$'\n'
 declare -r delim2=$'\f'
@@ -44,11 +42,6 @@ declare -r MAX_VALUE_LEN=1024
 # Syntax for indicating filenames (or stdin) as data sources
 declare -r embeddedFileRegex="@(.*)@"
 
-# Regexes for parsing specially-delimited strings
-declare -r threeValueParser="(.*)$delim(.*)$delim(.*)"
-declare -r fourValueParser="(.*)$delim(.*)$delim(.*)$delim(.*)"
-declare -r fiveValueParser="(.*)$delim(.*)$delim(.*)$delim(.*)$delim(.*)"
-
 # Assign defaults for values used in many caller scripts
 g_defaultNums=$ILLEGAL_DEFAULT_NUM
 g_defaultNumCodes=0i
@@ -62,9 +55,6 @@ g_dbClientOptions=""
 g_mainConjunction=AND
 g_haveParser=$FALSE
 
-# Global scratch space used to supplement the shell's function return-value protocol
-g_returnString=""
-
 # The reference data description used to expand abbreviated table or column names
 g_masterColumnList=""
 
@@ -76,14 +66,14 @@ g_masterColumnList=""
 ##############################################################################################
 function parseCompletely()
 {
-    # Values to be set and returned here
+    # Values to be set and returned
     local OPTIONS
     local STANDARD_COLS="$1"
     local TABLES="$2"
     local mainColumn="$3"
     local WHERE_PRECLAUSE="$4"
 
-    # Constant ("enum") internal error codes
+    # Constant ("enumerated") internal error codes
     declare -r retCode_noSelection=0
     declare -r retCode_selectMainColumnOnly=1
     declare -r retCode_clearAllSelections=2
@@ -91,12 +81,13 @@ function parseCompletely()
 
     shift 4
 
-    # Read the command-line options into a data vector
+    local remainingArgs
+
+    # Filter the command-line options into a separate list
     parseOutOptions "$@"
     if (($?)); then
-        # return string contains list of options followed by symbolic list of non-option args
-        OPTIONS=${g_returnString%$delim*}
-        eval set "-- "${g_returnString#$OPTIONS$delim}
+        getReturnValues OPTIONS remainingArgs
+        eval set "-- "$remainingArgs
     fi
 
     # Load the expression parser
@@ -119,11 +110,8 @@ function parseCompletely()
     if ((bIsUpdate)); then
         parseOutSets "$@"
         if (($?)); then
-            # Parse out the returned values
-            [[ $g_returnString =~ $threeValueParser ]]
-            SET_CLAUSE=${BASH_REMATCH[1]}
-            setAbbrs=${BASH_REMATCH[2]}
-            eval set "-- "${BASH_REMATCH[3]}
+            getReturnValues SET_CLAUSE setAbbrs remainingArgs
+            eval set "-- "$remainingArgs
         else
             echo Error: The UPDATE flag is set without any UPDATE instructions.
             return 15
@@ -145,13 +133,10 @@ function parseCompletely()
         fi
 
         # Parse out the returned values
-        if [[ $g_returnString =~ $threeValueParser ]]; then
-            rawPreselects=${BASH_REMATCH[1]}
-            rawPostselects=${BASH_REMATCH[2]}
-            eval set "-- "${BASH_REMATCH[3]}
-            if [[ $rawPreselects == " " ]]; then rawPreselects=; fi     ## old way was to use backticks so " " became ""
-            if [[ $rawPostselects == " " ]]; then rawPostselects=; fi
-        fi
+        getReturnValues rawPreselects rawPostselects remainingArgs
+        eval set "-- "$remainingArgs
+        if [[ $rawPreselects == " " ]]; then rawPreselects=; fi     ## old way was to use backticks so " " became ""
+        if [[ $rawPostselects == " " ]]; then rawPostselects=; fi
     fi
 
     # If required, make special adjustments to the standard column set
@@ -179,7 +164,7 @@ function parseCompletely()
     if (($?)); then
         # Assemble the full SELECT clause from the three parts without expanding
         assembleSelectClause "$rawPreselects" "$STANDARD_COLS" "$rawPostselects"
-        ACTION_CLAUSE=$g_returnString
+        getReturnValue ACTION_CLAUSE
     else
         # To make things easier, come up with a list of table names *without* aliases
         TABLE_NAMES=${TABLES//+( )+([[:alpha:]])*( ),*( )/,}     # in two steps, squeeze out table-name aliases "myTable mt," leaving just the table names
@@ -201,9 +186,8 @@ function parseCompletely()
             # Expand the SET clause column names and finish off the clause itself
 #MMMM Address the side effect of reworking expand():
             expandColumnNames "$TABLE_NAMES" "$setAbbrs"
-            expandedNames=$g_returnString
-            OLDFS="$IFS"; IFS=$',' expandedSetCols=(${expandedNames%$delim*})
-            setCodes=${expandedNames#*$delim}
+            getReturnValue setCols setCodes
+            OLDFS="$IFS"; IFS=$',' expandedSetCols=(${setCols})
 
             local nullPlaceholder=$setClauseMarker$NULL_INDICATOR$setClauseMarker
             for nextColumn in ${expandedSetCols[@]}; do
@@ -232,12 +216,12 @@ function parseCompletely()
 
         else
             # Expand the SELECT clause column names, keeping track of the pre/post distinction
-            expandSelections "$rawPreselects"; preselects=$g_returnString
-            expandSelections "$rawPostselects"; postselects=$g_returnString
+            expandSelections "$rawPreselects"; getReturnValue preselects
+            expandSelections "$rawPostselects"; getReturnValue postselects
 
             # Assemble the full SELECT clause from the three parts
             assembleSelectClause "$preselects" "$STANDARD_COLS" "$postselects"
-            ACTION_CLAUSE=$g_returnString
+            getReturnValue ACTION_CLAUSE
         fi
     fi
 
@@ -262,9 +246,7 @@ function parseCompletely()
       *) # Parsing was successful.
          ;;
     esac
-    parsedWheres=$g_returnString
-    sortInstructions="${parsedWheres#*$delim}"
-    WHERE_CLAUSE=$WHERE_PRECLAUSE"${parsedWheres%$delim*}"
+    getReturnValues WHERE_CLAUSE sortInstructions
 
     # Massage the query contents based on the user options
     # -- By default, use NULLs "intuitively" inside NOT-subclauses rather than using SQL's built-in 3-valued-logic
@@ -272,7 +254,7 @@ function parseCompletely()
     if (($? == 0)); then
         if [[ "$WHERE_CLAUSE" =~ NOT ]]; then
             useIntuitiveNulls "$WHERE_CLAUSE"
-            WHERE_CLAUSE=$g_returnString
+            getReturnValue WHERE_CLAUSE
         fi
     fi
 
@@ -290,7 +272,7 @@ function parseCompletely()
     fi
 
     # Construct the LIMIT clause
-    isOptionOn "l[0-9]+" "$OPTIONS" -show; LIMIT_CLAUSE=$g_returnString
+    isOptionOn "l[0-9]+" "$OPTIONS" -show; getReturnValue LIMIT_CLAUSE
     if [[ -n "$LIMIT_CLAUSE" ]]; then
         LIMIT_CLAUSE="LIMIT "${LIMIT_CLAUSE#[Ll]}
     fi
@@ -307,15 +289,7 @@ function parseCompletely()
         fi
     fi
 
-    g_returnString="$OPTIONS"
-    g_returnString+=$delim
-    g_returnString+="${SET_CLAUSE:-$ACTION_CLAUSE}"
-    g_returnString+=$delim
-    g_returnString+="$WHERE_CLAUSE"
-    g_returnString+=$delim
-    g_returnString+="$LIMIT_CLAUSE"
-    g_returnString+=$delim
-    g_returnString+="$sortInstructions"
+    setReturnValues "$OPTIONS" "${SET_CLAUSE:-$ACTION_CLAUSE}" "$WHERE_CLAUSE" "$LIMIT_CLAUSE" "$sortInstructions"
 
     return $bIsUpdate
 }
@@ -347,7 +321,7 @@ function assembleSelectClause()
 #MMMM This means the delims, token counts and type indicators. (But for NCV delims there are no counts.)
     selectClause=${selectClause//$tokenDelimiter?/}
 
-    g_returnString=$selectClause
+    setReturnValue "$selectClause"
 }
 
 ####################################################################################
@@ -363,7 +337,7 @@ function expandSelections()
     local tokenizedSelections completeExpansion currentSelection expandedSelection
 
     # Tokenize the (comma-delimited) list of selections
-    parseQueryClause "$rawSelections"; tokenizedSelections=$g_returnString
+    parseQueryClause "$rawSelections"; getReturnValue tokenizedSelections
 
     # Handle the selections one-by-one. Each can contain one or more expandable words.
     completeExpansion=""
@@ -394,20 +368,20 @@ function expandSelections()
 
             case $expansionType in
                 ${tt[EXPANDABLE_WORD]})
-                    getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; expansionCandidates=$g_returnString
+                    getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; getReturnValue expansionCandidates
                     promptForExpansion "$currentAbbr" "$expansionCandidates"
-                    expandedName=${g_returnString%:*}
+                    getReturnValues expandedName internalType
                     ;;
                 ${tt[EXPANDABLE_SEQUENCE]})
 #MMMM Needs finishing:
                     expandSequence "$currentAbbr"
-                    expandedName=$g_returnString
+                    getReturnValue expandedName
                     ;;
                 ${tt[FUNCTION]})
 #MMMM Needs finishing:
-                    getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; expansionCandidates=$g_returnString
+                    getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; getReturnValue expansionCandidates
                     promptForExpansion "$currentAbbr" "$expansionCandidates"
-                    expandedName=${g_returnString%:*}
+                    getReturnValues expandedName internalType
                     #MMMM finalizeExpandedFunctionName $expandedName
                     ;;
             esac
@@ -424,8 +398,7 @@ function expandSelections()
     done
     completeExpansion=${completeExpansion%,}
 
-    g_returnString=$completeExpansion
-
+    setReturnValue "$completeExpansion"
 }
 
 
@@ -532,7 +505,7 @@ function useIntuitiveNulls()
     done
 
     # End of function.
-    g_returnString=$lhs
+    setReturnValue "$lhs"
 }
 
 ###################################################################################
@@ -542,11 +515,10 @@ function useIntuitiveNulls()
 function isOptionOn()
 {
     local regex=":($1):"
-    g_returnString=""
 
     if [[ "${2,,}" =~ ${regex,,} ]]; then   # Lowercase-ify the arg and the regex to get case-agnosticism
         if [[ "$3" == -show ]]; then
-            g_returnString=${BASH_REMATCH[1]}
+            setReturnValue "${BASH_REMATCH[1]}"
         fi
         return 1
     else
@@ -581,7 +553,7 @@ function parseOutOptions()
     if [[ ! "$@" =~ $optionsRegex ]]; then return 0; fi
 
     for ((idx=1; idx<=$#; idx++)); do
-        eval arg=\$$idx      ## see Bash manual, "Indirect References"
+        eval arg=\$$idx      # value of the idx-th argument ($idx is just the index number)
 
         # Identify the "normal" option arguments; "-" plus the option name and sometimes a value
         if [[ "$arg" =~ ^[-]+[[:alnum:]] ]]; then
@@ -616,9 +588,7 @@ function parseOutOptions()
     retArgs="${retArgs% }"
 
     # Make the options case-agnostic by always storing them in lowercase
-    g_returnString=${OPTION_LIST,,}":"
-    g_returnString+=$delim
-    g_returnString+=$retArgs
+    setReturnValues "${OPTION_LIST,,}" $retArgs
 
     return $retCode
 }
@@ -702,7 +672,7 @@ function expandValueSet()
         response="Not a range or a prefix list."
     fi
 
-    g_returnString=$response
+    setReturnValue "$response"
 }
 
 ##########################################################################################
@@ -722,7 +692,7 @@ function parseOutSets()
     declare -i haveSets=0
 
     for ((idx=1; idx<=$#; idx++)); do
-        eval arg=\$$idx      ## see Bash manual, "Indirect References"
+        eval arg=\$$idx      # value of the idx-th argument ($idx is just the index number)
 
         # If the arg is a SET-type arg...
         if [[ "$arg" =~ [[:alnum:]]${updateOperator}. ]]; then
@@ -739,11 +709,7 @@ function parseOutSets()
     SET_CLAUSE=${SET_CLAUSE%,}
     abbrList=${abbrList%,}
 
-    g_returnString=${SET_CLAUSE:-$placeholderForEmpty}
-    g_returnString+=$delim
-    g_returnString+=${abbrList:-$placeholderForEmpty}
-    g_returnString+=$delim
-    g_returnString+=$retArgs
+    setReturnValues ${SET_CLAUSE:-$placeholderForEmpty} ${abbrList:-$placeholderForEmpty} $retArgs
 
     return $haveSets
 }
@@ -779,7 +745,7 @@ function parseOutSelects()
     if [[ ! "$@" =~ $selectionsRegex ]]; then return 0; fi
 
     for ((idx=1; idx<=$#; idx++)); do
-        eval arg=\$$idx      ## see Bash manual, "Indirect References"
+        eval arg=\$$idx      # value of the idx-th argument ($idx is just the index number)
         eval nextArg=\$$((idx+1))
 
         isArgOfType "$arg" selection
@@ -860,11 +826,7 @@ function parseOutSelects()
     PRESELECTION_LIST=${PRESELECTION_LIST%,}
     POSTSELECTION_LIST=${POSTSELECTION_LIST#,}
 
-    g_returnString=${PRESELECTION_LIST:-$placeholderForEmpty}
-    g_returnString+=$delim
-    g_returnString+=${POSTSELECTION_LIST:-$placeholderForEmpty}
-    g_returnString+=$delim
-    g_returnString+=$retArgs
+    setReturnValues ${PRESELECTION_LIST:-$placeholderForEmpty} ${POSTSELECTION_LIST:-$placeholderForEmpty} $retArgs
 
     return $retCode
 }
@@ -895,7 +857,7 @@ function generateWhereClause()
     declare -a whereComponent
     local _wheres_bIsList _wheres_bIncludesNull _wheres_bIsRange
     local name nameType code comparator value
-    local valueType sql
+    local valueType rhs
 
     # Array-ify the column name inference rules
     declare -a defaultNumCols defaultAlnumCols dftNumCodes dftAlnumCodes columnNames columnCodes
@@ -927,7 +889,7 @@ function generateWhereClause()
 
         # Parse and lexically analyze the argument
         parseQueryClause "$1" $TRUE
-        local rhs=$g_returnString
+        getReturnValue rhs
 
         # Prepare to walk the lexed argument forward
         local sql=" $g_mainConjunction ("   # this outermost '(' ensures the "main" conjunctions have least precedence
@@ -942,7 +904,7 @@ function generateWhereClause()
             # Front delimiters for predicates
             if [[ $rhs =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}([0-9]+) ]]; then
                 ncvCounter=${BASH_REMATCH[1]}
-                advanceStream "$rhs" ${BASH_REMATCH[0]}; rhs=$g_returnString
+                advanceStream "$rhs" ${BASH_REMATCH[0]}; getReturnValue rhs
 
                 # Retrieve the end delimiter
                 [[ $rhs =~ $tokenDelimiter([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])([0-9]+)(.*) ]]
@@ -969,30 +931,30 @@ function generateWhereClause()
             elif [[ $rhs =~ ^$tokenDelimiter${tt[BEGIN_GROUP]}([0-9]+) ]]; then
                 sql+="("
                 nestingLevel=${BASH_REMATCH[1]}
-                advanceStream "$rhs" "${BASH_REMATCH[0]}"; rhs=$g_returnString
+                advanceStream "$rhs" "${BASH_REMATCH[0]}"; getReturnValue rhs
                 continue
 
             # Right grouping parentheses
             elif [[ $rhs =~ ^$tokenDelimiter${tt[END_GROUP]}([0-9]+) ]]; then
                 sql+=")"
                 nestingLevel=${BASH_REMATCH[1]}
-                advanceStream "$rhs" "${BASH_REMATCH[0]}"; rhs=$g_returnString
+                advanceStream "$rhs" "${BASH_REMATCH[0]}"; getReturnValue rhs
                 continue
 
             # Logical operators
             elif [[ $rhs =~ ^${tokenDelimiter}${tt[BOOLEAN]}'&' ]]; then
                 sql+=" AND"
-                advanceStream "$rhs" "${BASH_REMATCH[0]}"; rhs=$g_returnString
+                advanceStream "$rhs" "${BASH_REMATCH[0]}"; getReturnValue rhs
                 continue
             elif [[ $rhs =~ ^${tokenDelimiter}${tt[BOOLEAN]}'|' ]]; then
                 sql+=" OR"
-                advanceStream "$rhs" "${BASH_REMATCH[0]}"; rhs=$g_returnString
+                advanceStream "$rhs" "${BASH_REMATCH[0]}"; getReturnValue rhs
                 continue
 
             # space markers
             elif [[ $rhs =~ ^$tokenDelimiter${tt[SPACE]} ]]; then
                 sql+=" "
-                advanceStream "$rhs" 2; rhs=$g_returnString
+                advanceStream "$rhs" 2; getReturnValue rhs
                 continue
             fi
 
@@ -1011,9 +973,7 @@ function generateWhereClause()
     fi
 
     # Pass back all necessary information to the caller
-    g_returnString=$WHERE_CLAUSE
-    g_returnString+=$delim
-    g_returnString+=$columnToSortBy:$valuesToSortBy
+    setReturnValues "$WHERE_CLAUSE" "$columnToSortBy" "$valuesToSortBy"
 
     return 0
 }
@@ -1069,7 +1029,7 @@ function normalizePredicate()
         sql+=" ("
     fi
 
-    smartExpandExpression "$predicate"; predicate=$g_returnString
+    smartExpandExpression "$predicate"; getReturnValue predicate
 
 # Eventually:
 
@@ -1171,10 +1131,10 @@ function processNamedNCVArgument()
 
     # Turn lists of values into "IN(...)" particles
     elif ((_wheres_bIsList)); then
-        quoteListIfNeeded "$value" $code; value=$g_returnString
+        quoteListIfNeeded "$value" $code; getReturnValue value
 
         # Format lists of floating-point values
-        formatValueIfDecimalList "$value"; value=$g_returnString
+        formatValueIfDecimalList "$value"; getReturnValue value
 
         # To post-sort the result set, we record the values (without quotes) and the column name, always using the FIRST value list we encounter.
         if [[ -z $columnToSortBy ]]; then
@@ -1191,9 +1151,10 @@ function processNamedNCVArgument()
 
     # Turn value ranges (either dates or numbers) into "BETWEEN...AND" particles
     elif ((_wheres_bIsRange)); then
-        quoteRangeValueIfNeeded "$value" $code; value=$g_returnString
-        formatValueIfDecimal "${value%$delim*}"; local lowValue=$g_returnString
-        formatValueIfDecimal "${value#*$delim}"; local highValue=$g_returnString
+        local lowValue highValue
+        quoteRangeValueIfNeeded "$value" $code; getReturnValue value
+        formatValueIfDecimal "${value%$delim*}"; getReturnValue lowValue
+        formatValueIfDecimal "${value#*$delim}"; getReturnValue highValue
 
         sql+="$name BETWEEN $lowValue AND $highValue"
 
@@ -1206,8 +1167,8 @@ function processNamedNCVArgument()
 
         # The general case for solitary values...
         else
-            quoteSingleValueIfNeeded "$value" $code; value=$g_returnString
-            formatValueIfDecimal "$value"; value=$g_returnString
+            quoteSingleValueIfNeeded "$value" $code; getReturnValue value
+            formatValueIfDecimal "$value"; getReturnValue value
 
             sql+="$name $comparator $value"
         fi
@@ -1250,7 +1211,7 @@ function processUnnamedNCVArgument()
         for singleCol in ${defaultNumCols[@]}; do
             code=${dftNumCodes[numDftNumCols]}
 
-            quoteRangeValueIfNeeded "$value" $code; value=$g_returnString
+            quoteRangeValueIfNeeded "$value" $code; getReturnValue value
 
             local lowValue=${value%$delim*}
             local highValue=${value#*$delim}
@@ -1269,9 +1230,9 @@ function processUnnamedNCVArgument()
 
         # Format decimal values and lists of decimal values
         if ((valueType==3)); then
-            formatValueIfDecimal "$value"; value=$g_returnString
+            formatValueIfDecimal "$value"; getReturnValue value
         elif ((valueType==4)); then
-            formatValueIfDecimalList "$value"; value=$g_returnString
+            formatValueIfDecimalList "$value"; getReturnValue value
         fi
 
         # Construct a query fragment piece-by-piece by iterating over the default columns
@@ -1281,10 +1242,9 @@ function processUnnamedNCVArgument()
             # If this column name has length bounds on its values, parse them out
             getValueLengthBounds "$singleCol"
             haveLengthBounds=$?
-            [[ $g_returnString =~ $threeValueParser ]]
-            singleCol=${BASH_REMATCH[1]}; minLength=${BASH_REMATCH[2]}; maxLength=${BASH_REMATCH[3]}
+            getReturnValues singleCol minLength maxLength
 
-            quoteListIfNeeded "$value" $code; fixedValue=$g_returnString
+            quoteListIfNeeded "$value" $code; getReturnValue fixedValue
 
             # Add an "OR" atom to this query fragment -- one way for lists, another way for singletons
             if ((_wheres_bIsList)); then
@@ -1338,8 +1298,7 @@ function processUnnamedNCVArgument()
             # If this column name has length bounds on its values, parse them out
             getValueLengthBounds "$singleCol"
             haveLengthBounds=$?
-            [[ $g_returnString =~ $threeValueParser ]]
-            singleCol=${BASH_REMATCH[1]}; minLength=${BASH_REMATCH[2]}; maxLength=${BASH_REMATCH[3]}
+            getReturnValues singleCol minLength maxLength
 
             # Add an "OR" atom to the current query piece -- one way for lists, another way for singletons
             if ((_wheres_bIsList)); then
@@ -1355,7 +1314,7 @@ function processUnnamedNCVArgument()
                     columnToSortBy=${defaultAlnumCols[@]//:+([^\ ])/} # space-delimited list of column names
                 fi
 
-                quoteListIfNeeded "$value" $code; fixedValue=$g_returnString
+                quoteListIfNeeded "$value" $code; getReturnValue fixedValue
 
                 sql+=$singleCol" IN ($fixedValue) OR "
                 if ((_wheres_bIncludesNull)); then
@@ -1375,7 +1334,7 @@ function processUnnamedNCVArgument()
 
                 # General case for singletons:
                 else
-                    quoteSingleValueIfNeeded "$value" $code; fixedValue=$g_returnString
+                    quoteSingleValueIfNeeded "$value" $code; getReturnValue fixedValue
 
                     sql+=$singleCol" $comparator $fixedValue OR "
                 fi
@@ -1404,7 +1363,7 @@ function quoteSingleValueIfNeeded()
     if [[ $code =~ ^q ]]; then
         val="'$val'"
     fi
-    g_returnString=$val
+    setReturnValue "$val"
 }
 
 function quoteListIfNeeded()
@@ -1413,7 +1372,7 @@ function quoteListIfNeeded()
     if [[ $code =~ ^q ]]; then
         val="'"${val//,/\',\'}"'"
     fi
-    g_returnString=$val
+    setReturnValue "$val"
 }
 
 function quoteRangeValueIfNeeded()
@@ -1422,7 +1381,7 @@ function quoteRangeValueIfNeeded()
     if [[ $code =~ ^q ]]; then
         val="'${val/$delim/'$delim'}'"
     fi
-    g_returnString=$val
+    setReturnValue "$val"
 }
 
 # Returns 1 if argument is negative, 0 otherwise
@@ -1433,7 +1392,7 @@ function isNegativeComparator()
 }
 
 
-# Returns 0 if all the list items' lengths are within the bounds, 1 if there is a violation (bash convention)
+# Returns 0 if all the list items' lengths are within the bounds, 1 if there is a violation
 # Arguments: (1) listBeingChecked  (2) lowerBound  (3) upperBound
 function checkListItemLengths()
 {
@@ -1463,11 +1422,7 @@ function getValueLengthBounds()
         haveLengthBounds=0
     fi
 
-    g_returnString=$columnName
-    g_returnString+=$delim
-    g_returnString+=$minLength
-    g_returnString+=$delim
-    g_returnString+=$maxLength
+    setReturnValues "$columnName" "$minLength" "$maxLength"
 
     return $haveLengthBounds
 }
@@ -1480,7 +1435,7 @@ function formatValueIfDecimal()
         val=${val/#./0.}
     fi
 
-    g_returnString=$val
+    setReturnValue "$val"
 }
 
 function formatValueIfDecimalList()
@@ -1492,7 +1447,7 @@ function formatValueIfDecimalList()
         val=${val//,./,0.}
     fi
 
-    g_returnString=$val
+    setReturnValue "$val"
 }
 
 ############################################################################
@@ -1536,7 +1491,7 @@ function loadFileAsCommaList()
     # Done.
     IFS=$OLDFS
 
-    g_returnString=$values
+    setReturnValue "$values"
 }
 
 ############################################################################
@@ -1568,7 +1523,8 @@ function foldResultSet()
     local newLine=$'\n'
     if [[ $1 =~ $'\r'$'\n' ]]; then newLine=$'\r'$'\n'; fi
 
-    # Remove the ascii-art lines from the result set, leaving header and body. (Faster than grep -v.)
+    # Measure the width of the result set using the ascii-art box that mysql provides.
+    # Then parse out the header and body and discard the box
     isOptionOn noHeader $OPTIONS
     if (($?)); then
         [[ $1 =~ (^[+-]+)${newLine}(.*)${newLine}\+ ]]
@@ -1576,14 +1532,15 @@ function foldResultSet()
         resultSet=${BASH_REMATCH[2]}
     else
         local plus="\+"
-        # New regex that accepts isolated plusses in the header.
+        # Measure the width using the top line of the ascii-art box
+        # Use a regex that accepts isolated plus signs in the header
         [[ $1 =~ ^(${plus}[-+]+${plus})${newLine}($'|'.*$'|'${newLine})${plus}[+-]+${newLine}(.*)${newLine}\+ ]]
         resultWidth=${#BASH_REMATCH[1]}
         resultSet=${BASH_REMATCH[2]}${BASH_REMATCH[3]}   # [2] = column hdr   [3] = data rows
     fi
 
     # Corner case: embedded newlines in result data
-    if [[ "$resultSet" =~ [^|+]${newLine} ]]; then
+    if [[ "$resultSet" =~ [^|+]${newLine} ]]; then   # look for a newline not preceded by the usual characters
         echo "******************************************************" > /dev/stderr
         echo  Embedded newlines detected in result set, cannot fold. > /dev/stderr
         echo "******************************************************" > /dev/stderr
@@ -1696,20 +1653,6 @@ validate_id_or_name_regex()
     if [ $# -lt 1 ]; then
         echo USAGE:  ${FUNCNAME[0]}  id_or_nameRegex
         exit 34
-    fi
-}
-
-# syntax: validate_args  minArgs  maxArgs  argSyntax
-# TODO Make maxargs optional
-# $1 and $2 here are meant to designate the positional parms to this fcn, not to the caller
-validate_args()
-{
-    # When maxargs is optional, will have to do this differently. Maybe replace  '-gt $2'  with  '-gt $1' ??
-    if [[ $# -lt $1 || $# -gt $2 ]]; then
-        shift
-        # Shift again if arg[2] is optional and is not given
-        echo USAGE: ${FUNCNAME[0]} "$@"
-        exit 56
     fi
 }
 

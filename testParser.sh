@@ -162,7 +162,7 @@ function testSubclause()
 
     # Exercise the code being tested
     parseQueryClause "$inputStr" $TRUE
-    actualResult=$g_returnString
+    getReturnValue actualResult
 
     # compare against the expected result
     showComparison "$expectedResult" "$actualResult"
@@ -234,9 +234,9 @@ function testSingle()
     done
 
     # Exercise the code being tested
-    parseQueryClause "$inputStr" $TRUE
+    parseQueryClause "$inputStr" $TRUE; getReturnValue actualResult
 
-    [[ $g_returnString =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}$NCVcount(.*)$tokenDelimiter${tt[END_NCV]}(N?C)?V$NCVcount ]]
+    [[ $actualResult =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}$NCVcount(.*)$tokenDelimiter${tt[END_NCV]}(N?C)?V$NCVcount ]]
     actualResult=${BASH_REMATCH[1]}
 
     # Compare against the expected result
@@ -372,8 +372,8 @@ ${tt[END_V]}3&&${tokenDelimiter}\
 ${tt[BEGIN_NCV]}4b${tokenDelimiter}\
 ${tt[END_V]}4))"
 
-delimitNCVsInString "$input"
-if [[ "$g_returnString" != "$expected" ]]; then
+delimitNCVsInString "$input"; getReturnValue actualResult
+if [[ "$actualResult" != "$expected" ]]; then
     echo Error in NCV detection.
     exit 1
 fi

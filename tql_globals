@@ -1,5 +1,4 @@
 # vim:filetype=sh:
-
 declare -r TRUE=1
 declare -r FALSE=0
 
@@ -63,4 +62,76 @@ declare -r g_expandedTypes=${tt[EXPANDED_WORD]}${tt[EXPANDED_SEQUENCE]}${tt[EXPA
 
 # Error/status codes
 declare -ri ERR_INVALID_TYPE=${tt[INVALID_TYPE]}   # Converts ${tt[INVALID_TYPE]} to a number
+
+########################################################################
+# Simulate modifiable function arguments as in pass-by-pointer/reference.
+# Implementation consists of global variables and several functions, {s,g}etReturnValues()
+g_storage=""
+g_storage1=""
+g_storage2=""
+g_storage3=""
+g_storage4=""
+g_storage5=""
+g_storage6=""
+g_storage7=""
+
+########################################################################
+# setReturnValues (value [...])
+#
+# Saves the arguments to global storage for retrieval upon function return.
+# Meant to be invoked inside the callee immediately before returning.
+########################################################################
+function setReturnValues()
+{
+    declare -i i
+    local givenValue storageCell 
+
+    for ((i=1; i<=$#; i++)); do
+        storageCell="g_storage"$i
+        givenValue=${!i}
+        eval $storageCell='$givenValue'
+    done
+
+    g_storage=${g_storage1}
+}
+
+function setReturnValue() { setReturnValues "$1"; }
+
+########################################################################
+# getReturnValues (name [...])
+#
+# Populates the variables named by the arguments with the values in global storage.
+# Meant to be invoked inside a caller immediately after return from a callee.
+#
+# N.B. The arguments must be variable names passed as flat strings,
+#      not the corresponding values (accidentally) referenced by the names
+########################################################################
+function getReturnValues()
+{
+    declare -i i
+    local givenVariable value storageCell
+
+    if [[ -z $g_storage ]]; then
+        g_storage=${g_storage1}
+    fi
+
+    for ((i=1; i<=$#; i++)); do
+        givenVariable=${!i}
+        storageCell="g_storage"$i
+        value=${!storageCell}
+        eval $givenVariable='$value'
+    done
+}
+
+function getReturnValue() { getReturnValues "$1"; }
+
+########################################################################
+# appendReturnValue( variableName )
+# APPENDS the first/only return value to the variable having the given name
+########################################################################
+function appendReturnValue() 
+{
+    local givenVariable=${!1}
+    eval $givenVariable+='$g_storage'
+}
 

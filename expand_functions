@@ -134,19 +134,21 @@ function smartExpandExpression()
             # Column name abbreviation
             columnTokenIDs[columnCount]=$tokenNumber
             inputColumnNames[columnCount]=$currentAbbr
-            getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; columnLists[columnCount++]=$g_returnString
+            getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; getReturnValues columnLists[columnCount]
+            ((columnCount++))
         elif [[ $expansionType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
             # Abbreviated word sequence
             sequenceTokenIDs[sequenceCount]=$tokenNumber
             inputSequenceNames[sequenceCount]=$currentAbbr
 #MMMM Needs finishing:
-            expandSequence "$currentAbbr"; ((sequenceCount++)); expandedName=$g_returnString
+            expandSequence "$currentAbbr"; ((sequenceCount++)); getReturnValue expandedName
         else
             # Function name abbreviation
             functionTokenIDs[functionCount]=$tokenNumber
             inputFunctionNames[functionCount]=$currentAbbr
 #MMMM Needs finishing:
-            getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; functionLists[functionCount++]=$g_returnString
+            getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; getReturnValues functionLists[functionCount]
+            ((functionCount++))
         fi
     done
 
@@ -235,7 +237,7 @@ function smartExpandExpression()
                             # Parse out the RDBMS type, convert to an internal type
                             [[ "$tempLine" =~ $delim2(.*)$delim2 ]]
                             local dataType=${BASH_REMATCH[1]}
-                            sqlTypeToInternalType "$dataType"; dataType=$g_returnString
+                            sqlTypeToInternalType "$dataType"; getReturnValue dataType
                             # If the type of the coordinate matches the current type, mark the feasibility
                             if [[ ${typeSignature[i]} == $dataType ]]; then
                                 ((feasibilityTrackers[listOffsets[i]+j]++))
@@ -295,9 +297,9 @@ function smartExpandExpression()
         done
 
         # Obtain the user's choice if needed
+        local internalType
         promptForExpansion "${shortNames[startingIndex]}" "${expansionLists[startingIndex]}"
-        expandedName=${g_returnString%:*}
-        local internalType=${g_returnString#$expandedName:}
+        getReturnValues expandedName internalType
         chosenTypeSignature[startingIndex]=$internalType
 
         # Reconstruct the expression with the full name, "word" type indicator, and internal type filled in
@@ -325,7 +327,7 @@ function smartExpandExpression()
     unset columnTokenIDs sequenceTokenIDs functionTokenIDs expansionTokenIDs feasibilityTrackers
     unset tempList
 
-    g_returnString=$expression
+    setReturnValues "$expression" "$chosenTransformSignature"
 }
 
 ####################################################################################
@@ -348,7 +350,7 @@ function evaluateTree()
 {
     local expression=$1 currentLevel=${2:-0}
     declare -i retVal
-    local leftType rightType
+    local leftType rightType resultantType transformation
     local operatorToken="${tokenDelimiter}([0-9]+)([${tt[COMPARATOR]}${tt[OPERATOR]}])$currentLevel([^${tokenDelimiter}]+)"
     local spaceToken=${tokenDelimiter}${tt[SPACE]}
     local leftParenToken=${tokenDelimiter}[0-9]+${tt[LEFT_PAREN]}[0-9]+
@@ -390,10 +392,10 @@ function evaluateTree()
         if [[ $leftSide =~ (${spaceToken})*${leftParenToken}(.*)${rightParenToken}(${spaceToken})* ]]; then
             # If it is parenthesized, strip the parens and evaluate the left side at the next nesting level
             leftSide=${BASH_REMATCH[2]}
-            evaluateTree "$leftSide" $((currentLevel+1)); leftType=${g_returnString%;*}
+            evaluateTree "$leftSide" $((currentLevel+1)); getReturnValue leftType
         else
             # If it is not parenthesized, evaluate the left side at the same level
-            evaluateTree "$leftSide" $currentLevel; leftType=${g_returnString%:*}
+            evaluateTree "$leftSide" $currentLevel; getReturnValue leftType
         fi
 
         # If the expression is known to be invalid, jump up and out
@@ -404,9 +406,9 @@ function evaluateTree()
         # Repeat the above for the right side
         if [[ $rightSide =~ (${spaceToken})*${leftParenToken}(.*)${rightParenToken}(${spaceToken})* ]]; then
             rightSide=${BASH_REMATCH[2]}
-            evaluateTree "$rightSide" $((currentLevel+1)); rightType=${g_returnString%:*}
+            evaluateTree "$rightSide" $((currentLevel+1)); getReturnValue rightType
         else
-            evaluateTree "$rightSide" $currentLevel; rightType=${g_returnString%:*}
+            evaluateTree "$rightSide" $currentLevel; getReturnValue rightType
         fi
         if [[ $rightType == ${tt[INVALID_TYPE]} ]]; then
             return $rightType
@@ -414,8 +416,7 @@ function evaluateTree()
 
         # Determine the aggregate/resultant type and identify transformations
         lookupResultantTypeAndTrans $leftType $operator $operatorType $rightType
-        local resultantType=${g_returnString%:*}
-        local transformation=${g_returnString#*:}
+        getReturnValues resultantType transformation
         # Return instantly if the type is invalid
         if [[ $resultantType == ${tt[INVALID_TYPE]} ]]; then
             return $resultantType
@@ -433,7 +434,7 @@ function evaluateTree()
             transformation+="."$rightmostTokenId
             transformSignature[transformCount++]=$transformation
         fi
-        g_returnString=$resultantType
+        setReturnValue "$resultantType"
         return 0
 
     else # No operator was found at the current level. This means we are left with either
@@ -463,9 +464,9 @@ function evaluateTree()
                         # Parse out the RDBMS type, convert to an internal type and return it
                         [[ "$tempLine" =~ $delim2(.*)$delim2 ]]
                         sqlType=${BASH_REMATCH[1]}
-                        sqlTypeToInternalType "$sqlType"
-                        typeSignature[i]=$g_returnString
-                        return 0 # $g_returnString will have been set
+                        sqlTypeToInternalType "$sqlType"; getReturnValue typeSignature[i]
+                        setReturnValue "${typeSignature[i]}"
+                        return 0
                     fi
                 done
                 ;;
@@ -474,7 +475,7 @@ function evaluateTree()
                 ;;
             *)
                 # Default behavior: A single, normal token or already-expanded token
-                g_returnString=$tokenType
+                setReturnValue "$tokenType"
                 return 0
                 ;;
         esac
@@ -496,28 +497,30 @@ function evaluateTree()
 ####################################################################################
 function sqlTypeToInternalType()
 {
-    local sqlType=${1,,}
+    local sqlType=${1,,} internalType
 
     # Note carefully which comparisons use the "==" sign and which use the "=~"
     if [[ "$sqlType" =~ (int|^bool|^bit|^year) ]]; then
-        g_returnString=${tt[INTEGER]}
+        internalType=${tt[INTEGER]}
     elif [[ "$sqlType" =~ (char|binary|enum) ]]; then   # char, varchar, binary
-        g_returnString=${tt[STRING_CONSTANT]}
+        internalType=${tt[STRING_CONSTANT]}
     elif [[ "$sqlType" =~ (^dec|^num|^double|^float|^fix) ]]; then
-        g_returnString=${tt[DECIMAL]}
+        internalType=${tt[DECIMAL]}
     elif [[ "$sqlType" == date ]]; then
-        g_returnString=${tt[DATE]}
+        internalType=${tt[DATE]}
     elif [[ "$sqlType" == time ]]; then
-        g_returnString=${tt[TIME]}
+        internalType=${tt[TIME]}
     elif [[ "$sqlType" =~ time ]]; then   # datetime and timestamp
-        g_returnString=${tt[TIMESTAMP]}
+        internalType=${tt[TIMESTAMP]}
     elif [[ "$sqlType" =~ (blob|text) ]]; then
-        g_returnString=${tt[BLOB]}
+        internalType=${tt[BLOB]}
     elif [[ "$sqlType" == set ]]; then
-        g_returnString=${tt[SET]}
+        internalType=${tt[SET]}
     else
-        g_returnString=${tt[INVALID_TYPE]}
+        internalType=${tt[INVALID_TYPE]}
     fi
+
+    setReturnValue "$internalType"
 }
 
 ####################################################################################
@@ -571,10 +574,7 @@ function lookupResultantTypeAndTrans()
         : ${resultantType:=${tt[INVALID_TYPE]}}
     fi
 
-    g_returnString=$resultantType":"
-    if [[ -n $transformation ]]; then
-        g_returnString+=$transformation
-    fi
+    setReturnValues resultantType transformation
 }
 
 ####################################################################################
@@ -585,12 +585,12 @@ function expandFully()
 {
     if [[ -z $1 ]]; then
         # Empty argument: Nothing (more) to expand. The recursion stops.
-        g_returnString=""
+        setReturnValue ""
         return
     fi
 
     local abbr="$1"
-    local retStr="$abbr"
+    local retStr="$abbr" tempStr
     local excepList newAbbr excepWords
 
     OLDFS="$IFS"; IFS=$'\n' excepList=($2)
@@ -610,19 +610,18 @@ function expandFully()
             didExpand=1
 
             # Recursively expand the remaining pieces on the left and right sides
-            expandFully "${newAbbr%% *}" "$2"
-            retStr=$g_returnString
-            retStr+=" ${excepWords[1]} "
-            expandFully "${newAbbr##* }" "$2"
-            retStr+=$g_returnString
+            expandFully "${newAbbr%% *}" "$2"; getReturnValue tempStr
+            retStr="$tempStr ${excepWords[1]} "
+            expandFully "${newAbbr##* }" "$2"; getReturnValue tempStr
+            retStr+=$tempStr
             break
         fi
     done
 
     if ((didExpand)); then
-        g_returnString=$retStr
+        setReturnValue "$retStr"
     else
-        g_returnString="."$abbr
+        setReturnValue ".$abbr"
     fi
 }
 
@@ -714,7 +713,7 @@ function expandAbbreviatedName()
         # First create a sequence of words marked as either atomic or expandable.  (no mark -> atomic,  dot mark -> expandable)
         set -f
         expandFully "$nameAbbr" "$macroSubstitutionList"
-        _expand_nameRegex=$g_returnString
+        getReturnValue _expand_nameRegex
 
         # If there are expandable abbreviations, work with them...
         if [[ "$_expand_nameRegex" =~ (^| )[^.] ]]; then
@@ -803,13 +802,13 @@ function expandAbbreviatedName()
 
     # If all of the above techniques failed, return the abbreviation as-is and set an error code
     if ((numCandidates == 0)); then
-        g_returnString=$nameAbbr${delim2}""
+        setReturnValue "$nameAbbr${delim2}"""
         return 1
     fi
 
     # If any of the above techniques gave us a single definitive answer, then use it
     if ((numCandidates == 1)); then
-        g_returnString=${_expand_matchList[0]//$delim/$delim2}   # Change the delimiting of the matchList pieces for convenience.
+        setReturnValue "${_expand_matchList[0]//$delim/$delim2}"   # Change the delimiting of the pieces for convenience.
         return 0
 
     # If multiple matches turned up, address the ambiguity
@@ -836,7 +835,7 @@ function expandAbbreviatedName()
             # To detect exact matches it is enough to compare the lengths of the abbreviation and the matching candidate,
             # since the match algorithm is monotone-expanding.
             if [[ $abbrLength == ${#matchingName} ]]; then
-                g_returnString=${currCandidate//$delim/$delim2}
+                setReturnValue "${currCandidate//$delim/$delim2}"
                 return 0
             fi
 
@@ -858,7 +857,7 @@ function expandAbbreviatedName()
 
         # If we get here, we have only true-abbreviations which match at the word boundaries ...
         if ((capitalMatchesCount == 1)); then
-            g_returnString=${_expand_matchList[capitalMatchIndices[0]]//$delim/$delim2}
+            setReturnValue "${_expand_matchList[capitalMatchIndices[0]]//$delim/$delim2}"
             unset capitalMatchIndices
             return 0
 
@@ -875,12 +874,12 @@ function expandAbbreviatedName()
 
             # Redelimit the records with the primary delimiter
             OLDFS=$IFS; IFS=$'\n'
-            g_returnString="${_expand_matchList[*]}"
+            setReturnValues "${expand_matchList[*]}"
             IFS=$OLDFS
             return 0
 
         else # no matches.
-            g_returnString=$nameAbbr${delim2}""
+            setReturnValue "$nameAbbr${delim2}"""
             unset capitalMatchIndices
             return 2
         fi
@@ -933,10 +932,11 @@ function promptForExpansion()
     unset finalizeExpandedNameCommand
 
     [[ $matchingLine =~ $delim2(.*)$delim2 ]]
-    local matchingType=${BASH_REMATCH[1]}
-    sqlTypeToInternalType $matchingType; local internalType=$g_returnString
+    local internalType matchingType
+    matchingType=${BASH_REMATCH[1]}
+    sqlTypeToInternalType $matchingType; getReturnValue internalType
 
-    g_returnString=$matchingName:$internalType
+    setReturnValues $matchingName "$internalType"
     return 0
 }
 
@@ -952,17 +952,15 @@ finalizeExpandedColumnName()
 {
     local record="${1//$delim2/$delim}"
 
-    [[ $record =~ $threeValueParser ]]
+    [[ $record =~ (.*)$delim(.*)$delim(.*) ]]
     columnName=${BASH_REMATCH[1]}
     columnDesc=${BASH_REMATCH[2]}
     columnDefault=${BASH_REMATCH[3]}
 
     setColumnCode $columnName $columnDesc $columnDefault
+    getReturnValues finalCode finalName
 
-    finalName=${g_returnString:3}
-    finalCode=${g_returnString:0:2}
-
-    g_returnString=$finalName
+    setReturnValue "$finalName"
 }
 
 ####################################################################################
@@ -1108,6 +1106,6 @@ function setColumnCode()
         fi
     fi
 
-    g_returnString=$columnCode:$columnName
+    setReturnValues "$columnCode" "$columnName"
 }
 

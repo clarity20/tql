@@ -14,13 +14,9 @@ fi
 ACTION_CLAUSE='*'
 
 # Parse the cmdline opts
-parseOutOptions "$@"     # return string contains options on line 1, symbolic list of non-option args on line 2
-retVal=$?
-parsedOpts=$g_returnString
-if ((retVal)); then
-    OPTIONS=${parsedOpts%$delim*}
-    eval set "-- "${parsedOpts#$OPTIONS$delim}
-fi
+parseOutOptions "$@"
+getReturnValues OPTIONS remainingArgs
+eval set "-- "${remainingArgs}
 
 NUMROWS=$(isOptionOn "[0-9]+" $OPTIONS -show)
 : ${NUMROWS:=10}

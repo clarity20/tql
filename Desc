@@ -63,7 +63,8 @@ fi
 if [[ "$relativeTable" =~ , ]]; then
     # If we're given a comma-separated list of multiple table names/regexes, invoke the special argument parser
     generateWhereClause "" "" "$relativeTable"  # TODO: This is prolly costly when used. Try to optimize.
-    WHERE_PRECLAUSE=$WHERE_PRECLAUSE"${g_returnString%$delim*}"
+    getReturnValue mainWhereClause
+    WHERE_PRECLAUSE=$WHERE_PRECLAUSE"${mainWhereClause}"
 else
     WHERE_PRECLAUSE=$WHERE_PRECLAUSE" AND table_name LIKE '$relativeTable'"
 fi
@@ -77,7 +78,6 @@ g_defaultAlnums=c.column_name
 # Invoke the main parsing routine
 parseCompletely  "$STANDARD_COLS"  "$TABLES"  "column_name"  "$WHERE_PRECLAUSE"  "$@"
 retVal=$?
-parsedClauses=$g_returnString
 if ((retVal >= 10)); then
     echo Exiting.
     exit $retVal
@@ -85,14 +85,7 @@ elif ((retVal == 1)); then
     g_ACTION=UPDATE
 fi
 
-# Parse out the SQL clauses from the return string
-if [[ $parsedClauses =~ $fiveValueParser ]]; then
-    OPTIONS="${BASH_REMATCH[1]}"
-    ACTION_CLAUSE="${BASH_REMATCH[2]}"
-    WHERE_CLAUSE="${BASH_REMATCH[3]}"
-    LIMIT="${BASH_REMATCH[4]}"
-    sortInstructions="${BASH_REMATCH[5]}"
-fi
+getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions
 
 isOptionOn "debug|d" $OPTIONS
 if (($?)); then
@@ -131,7 +124,5 @@ if [[ -z $RAW_RESULT ]]; then
     fi
 fi
 
-#if ((cmdLineMode)); then
-    foldResultSet "$RAW_RESULT" "$sortInstructions"
-#fi
+foldResultSet "$RAW_RESULT" "$sortInstructions"
 
