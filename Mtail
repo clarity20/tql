@@ -42,17 +42,6 @@ for line in ${TABLE_INFO[*]}; do
 
     ORDERBY_CLAUSE=" ORDER BY $pkColumn DESC"
     
-    isOptionOn "debug|d" $OPTIONS
-    if (($?)); then
-        echo $THIS_SCRIPT:
-        echo " Options:  $OPTIONS"
-        echo "  $g_ACTION: $ACTION_CLAUSE"
-        echo "  Tables:  ${TABLE[lineCount]}"
-        echo "   Where:  $WHERE_CLAUSE"
-        echo "  OrderBy: $ORDERBY_CLAUSE"
-        echo "  Limit:   $LIMIT"
-    fi
-    
     # Build a compound SQL command by stringing together the individual queries
     DB_COMMAND+="$g_ACTION $ACTION_CLAUSE FROM ${TABLE[lineCount]} $WHERE_CLAUSE $ORDERBY_CLAUSE $LIMIT;"$'\n'
 
@@ -65,10 +54,12 @@ if (($?)); then
     exit 0
 fi
 
-# Call the db engine once, array-ify the result and show the banners if necessary.
+# Call the db engine once and array-ify the result
 RAW_RESULT=($("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND")) || exit $?
 
 lineCount=0
+
+# Break down the result table-by-table
 for line in ${RAW_RESULT[*]}; do
 
     # Keep track of where each table begins in the unified result set
@@ -100,3 +91,4 @@ for line in ${RAW_RESULT[*]}; do
 done
 
 IFS=$OLDFS
+

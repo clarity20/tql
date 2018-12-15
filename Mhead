@@ -34,17 +34,6 @@ fi
 LIMIT="LIMIT $NUMROWS"
     
 for TABLE in ${TABLE_ARR[*]}; do
-
-    isOptionOn "debug|d" $OPTIONS
-    if (($?)); then
-        echo $THIS_SCRIPT:
-        echo " Options:  $OPTIONS"
-        echo "  $g_ACTION: $ACTION_CLAUSE"
-        echo "  Tables:  $TABLE"
-        echo "   Where:  $WHERE_CLAUSE"
-        echo "  Limit:   $LIMIT"
-    fi
-    
     # Build a compound SQL command by stringing together the individual queries
     DB_COMMAND+="$g_ACTION $ACTION_CLAUSE FROM $TABLE $WHERE_CLAUSE $LIMIT;"$'\n'
 done
@@ -55,10 +44,12 @@ if (($?)); then
     continue
 fi
 
-# Call the db engine once, array-ify the result and show the banners if necessary.
+# Call the db engine once and array-ify the result
 RAW_RESULT=($("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND")) || exit $?
 
 lineCount=0
+
+# Break down the result table-by-table
 for line in ${RAW_RESULT[*]}; do
 
     # Keep track of where each table begins in the unified result set
@@ -88,4 +79,6 @@ for line in ${RAW_RESULT[*]}; do
 
     ((lineCount++))
 done
+
+IFS=$OLDFS
 

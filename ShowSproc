@@ -31,16 +31,6 @@ generateWhereClause "" "" "$@"
 getReturnValue parsedWheres
 WHERE_CLAUSE=$WHERE_PRECLAUSE"$parsedWheres"
 
-isOptionOn "debug|d" $OPTIONS
-if (($?)); then
-    echo $THIS_SCRIPT:
-    echo "  Options: $OPTIONS"
-    echo "  $g_ACTION:  $ACTION_CLAUSE"
-    echo "  Tables:  $TABLES"
-    echo "  Where:   $WHERE_CLAUSE"
-    echo "  Limit:   $LIMIT"
-fi
-
 DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES WHERE $WHERE_CLAUSE"
 
 isOptionOn "q|query" $OPTIONS

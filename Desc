@@ -87,16 +87,6 @@ fi
 
 getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions
 
-isOptionOn "debug|d" $OPTIONS
-if (($?)); then
-    echo $THIS_SCRIPT:
-    echo "  Options: $OPTIONS"
-    echo "  $g_ACTION:  $ACTION_CLAUSE"
-    echo "  Tables:  $TABLES"
-    echo "  Where:   $WHERE_CLAUSE"
-    echo "  Limit:   $LIMIT"
-fi
-
 # Compare to: SHOW COLS FROM $TABLES $WHERE_CLAUSE;
 if [[ $g_ACTION == UPDATE ]]; then
     DB_COMMAND="$g_ACTION $TABLES $ACTION_CLAUSE $WHERE_CLAUSE $LIMIT"
