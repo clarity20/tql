@@ -3,7 +3,7 @@
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 
-THIS_SCRIPT=`basename $0`
+THIS_SCRIPT=${0##*/}
 validate_single_column "$@"
 
 STANDARD_COLS="DISTINCT table_name,column_name"

@@ -3,7 +3,7 @@
 : ${TQL_HOME:=/HOME/tql}
 source $TQL_HOME/db_functions
 
-THIS_SCRIPT=`basename $0`
+THIS_SCRIPT=${0##*/}
 
 if [[ $# -lt 1 ]]; then
     echo USAGE: $THIS_SCRIPT [-numRows] tableName\(s\)

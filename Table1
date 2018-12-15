@@ -6,14 +6,16 @@ source $TQL_HOME/db_functions
 THIS_SCRIPT=${0##*/}
 validate_single_column "$@"
 
-STANDARD_COLS="table_name"    # others: auto_increment, ...
-TABLES=information_schema.tables
+STANDARD_COLS="id,name,zipcode"   # In "Table1" the columns are id, name, zipcode
+TABLES="table1"
 
-g_defaultAlnums=table_name
+# Column name inference rules
+g_defaultAlnums=name
 
-# Invoke the big parsing routine
-parseCompletely  "$STANDARD_COLS"  "$TABLES"  "table_name"  "$WHERE_PRECLAUSE"  "$@"
+# Invoke the main parsing routine
+parseCompletely  "$STANDARD_COLS"  "$TABLES"  "id"  "$WHERE_PRECLAUSE"  "$@"
 retVal=$?
+parsedClauses=$g_returnString
 if ((retVal >= 10)); then
     echo Exiting.
     exit $retVal
@@ -21,15 +23,18 @@ elif ((retVal == 1)); then
     g_ACTION=UPDATE
 fi
 
-getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions
-
-if [[ $WHERE_CLAUSE =~ [[:alpha:]] ]]; then
-    WHERE_CLAUSE+=" AND "
-fi
-WHERE_CLAUSE+="table_schema='$TQL_DBNAME'"
+# Parse out the SQL clauses from the return string
+[[ $parsedClauses =~ $fiveValueParser ]]
+OPTIONS="${BASH_REMATCH[1]}"
+ACTION_CLAUSE="${BASH_REMATCH[2]}"
+WHERE_CLAUSE="${BASH_REMATCH[3]}"
+LIMIT="${BASH_REMATCH[4]}"
+sortInstructions="${BASH_REMATCH[5]}"
 
 if [[ $g_ACTION == UPDATE ]]; then
     DB_COMMAND="$g_ACTION $TABLES $ACTION_CLAUSE $WHERE_CLAUSE $LIMIT"
+elif [[ $g_ACTION == DELETE ]]; then
+    DB_COMMAND="$g_ACTION FROM $TABLES $WHERE_CLAUSE $LIMIT"
 else
     DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES $WHERE_CLAUSE $LIMIT"
 fi
@@ -44,7 +49,7 @@ RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND") 
 if [[ $g_ACTION == UPDATE ]]; then exit 0; fi
 
 if [[ -z $RAW_RESULT ]]; then
-    echo No Tables found. > /dev/stderr
+    echo No Columns found. > /dev/stderr
     exit 1
 fi
 

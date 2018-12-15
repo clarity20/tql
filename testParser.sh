@@ -6,7 +6,7 @@
 #
 ######################################################################################
 
-THIS_SCRIPT=`basename $0`
+THIS_SCRIPT=${0##*/}
 source parse_functions
 tokenDelimiter=$'\n'
 
