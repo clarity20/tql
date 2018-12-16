@@ -41,7 +41,7 @@ done
 isOptionOn "q|query" $OPTIONS
 if (($?)); then
     echo "$DB_COMMAND"
-    continue
+    exit 0
 fi
 
 # Call the db engine once and array-ify the result
