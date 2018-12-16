@@ -50,7 +50,7 @@ done
 
 isOptionOn "q|query" $OPTIONS
 if (($?)); then
-    echo "$SUBCOMMAND"
+    echo "$DB_COMMAND"
     exit 0
 fi
 
