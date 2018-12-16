@@ -22,7 +22,7 @@ g_defaultAlnums=table_name
 # Three major steps to prepare the query:
 #
 # (1) Produce the table-names part of the WHERE clause. This requires special care when the tableNames argument is a comma-separated list.
-# (2) Treat all the other arguments properly (the where-particles along with any +/- prefixed options).
+# (2) Process all the other arguments in the usual way (the where-particles along with any +/- prefixed arguments).
 # (0) But first, a little maneuver that enables us to accept the arguments in any order, as long as
 #     the tableNames come before the columnNames (if any): we bring the tableNames to the front of the arg list.
 #     Then we can perform step (1), shift out $1, and then process everything else in the usual way
@@ -44,25 +44,25 @@ if [[ "$1" =~ ^[+-] ]]; then
         paramList=${paramList/1/$index}
         # Chop down to the actual number of parameters: delete "$($#)+1" and whatever follows
         paramList=${paramList%'"$'$(($#+1))*}
-        # Make the parm swap effective
+        # Make the parameter swap effective
         set $(eval echo $paramList)
     fi
 fi
 
 # Step (1): Create the table_name part of the WHERE clause.
 if [[ "$1" =~ [.] ]]; then
-    # If absolute table name(s) are given (i.e. the containing DB is explicitly named), strip off the DB name. The main query
+    # If absolute table name(s) are given (i.e. the database is explicitly named), strip off the DB name. The main query
     # can only accept relative table names. This issue arises e.g. in FindSproc which uses the table "information_schema.routines".
-    relativeTable="${1#*.}"
-    if [[ "$relativeTable" =~ , ]]; then
-        relativeTable=$(sed 's/,[^.]*\./,/g' <<< "$relativeTable")
+    relativeTable="${1#+([^,.]).}"       # Strip the leading table name
+    if [[ "$relativeTable" =~ , ]]; then    # Strip all following table names
+        relativeTable=${relativeTable//,+([^,.])./,}
     fi
 else
     relativeTable="$1"
 fi
 if [[ "$relativeTable" =~ , ]]; then
     # If we're given a comma-separated list of multiple table names/regexes, invoke the special argument parser
-    generateWhereClause "" "" "$relativeTable"  # TODO: This is prolly costly when used. Try to optimize.
+    generateWhereClause "" "" "$relativeTable"
     getReturnValue mainWhereClause
     WHERE_PRECLAUSE+=$mainWhereClause
 else
@@ -87,7 +87,6 @@ fi
 
 getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions
 
-# Compare to: SHOW COLS FROM $TABLES $WHERE_CLAUSE;
 if [[ $g_ACTION == UPDATE ]]; then
     DB_COMMAND="$g_ACTION $TABLES $ACTION_CLAUSE $WHERE_CLAUSE $LIMIT"
 else
