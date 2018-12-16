@@ -64,9 +64,9 @@ if [[ "$relativeTable" =~ , ]]; then
     # If we're given a comma-separated list of multiple table names/regexes, invoke the special argument parser
     generateWhereClause "" "" "$relativeTable"  # TODO: This is prolly costly when used. Try to optimize.
     getReturnValue mainWhereClause
-    WHERE_PRECLAUSE=$WHERE_PRECLAUSE"${mainWhereClause}"
+    WHERE_PRECLAUSE+=$mainWhereClause
 else
-    WHERE_PRECLAUSE=$WHERE_PRECLAUSE" AND table_name LIKE '$relativeTable'"
+    WHERE_PRECLAUSE+=" AND table_name LIKE '$relativeTable'"
 fi
 shift
 

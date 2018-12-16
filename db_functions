@@ -571,17 +571,17 @@ function parseOutOptions()
             fi
 
             # Add the option to the internal list
-            OPTION_LIST=$OPTION_LIST":${arg##+(-)}"
+            OPTION_LIST+=":"${arg##+(-)}
             ((retCode++))
 
         # Interpret the special "*" argument as the selectAll option
         elif [[ "$arg" == "*" ]]; then
-            OPTION_LIST=$OPTION_LIST":selectAll"
+            OPTION_LIST+=":selectAll"
             ((retCode++))
 
         # Otherwise the argument is not an option.
         else
-            retArgs=$retArgs'"${'$idx'}" '
+            retArgs+='"${'$idx'}" '
         fi
     done
 
@@ -699,10 +699,10 @@ function parseOutSets()
             # Construct a proto-SET clause using markers to identify the values; "column:=value" becomes "column = @value@,"
             SET_CLAUSE+=" ${arg/${updateOperator}/ = $setClauseMarker}$setClauseMarker,"
             # Parse out the column abbr from the supplied argument
-            abbrList=$abbrList${arg%${updateOperator}*},
+            abbrList+=${arg%${updateOperator}*},
             ((haveSets++))
         else
-            retArgs=$retArgs'"${'$idx'}" '
+            retArgs+='"${'$idx'}" '
         fi
     done
 
@@ -779,23 +779,23 @@ function parseOutSelects()
                         value=${value/${BASH_REMATCH[0]}/}
                     fi
                 fi
-                PRESELECTION_LIST="$PRESELECTION_LIST"$value,
+                PRESELECTION_LIST+=$value","
 
             # Handle "++1value" / "++value"
             elif [[ $value =~ $groupNameRegex ]]; then
                 # Leave the remaining plus sign there to tell caller this is a group name
                 if [[ ${value:1:0} == 1 ]]; then
                     if [[ -n ${value:2:0} ]]; then
-                        PRESELECTION_LIST="$PRESELECTION_LIST"${value/1/},     # Leave + but remove 1
+                        PRESELECTION_LIST+=${value/1/},     # Leave + but remove 1
                     else
-                        PRESELECTION_LIST=${PRESELECTION_LIST}"+"$nextArg,
+                        PRESELECTION_LIST+="+"$nextArg","
                         shift
                     fi
                 else
                     if [[ -n ${value:1:0} ]]; then
-                        POSTSELECTION_LIST="$POSTSELECTION_LIST",$value
+                        POSTSELECTION_LIST+=","$value
                     else
-                        POSTSELECTION_LIST=${POSTSELECTION_LIST}",+"$nextArg
+                        POSTSELECTION_LIST+=",+"$nextArg
                         shift
                     fi
                 fi
@@ -813,12 +813,12 @@ function parseOutSelects()
                         value=${value/${BASH_REMATCH[0]}/}
                     fi
                 fi
-                POSTSELECTION_LIST="$POSTSELECTION_LIST",$value
+                POSTSELECTION_LIST+=","$value
             fi
 
         # The arg is not a selection. Add it to the return list.
         else
-            retArgs=$retArgs'"${'$idx'}" '
+            retArgs+='"${'$idx'}" '
         fi
 
     done
