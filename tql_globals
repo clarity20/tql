@@ -59,13 +59,16 @@ tt=(
 
 declare -r g_expandableTypes=${tt[EXPANDABLE_WORD]}${tt[EXPANDABLE_SEQUENCE]}${tt[FUNCTION]}
 declare -r g_expandedTypes=${tt[EXPANDED_WORD]}${tt[EXPANDED_SEQUENCE]}${tt[EXPANDED_FUNCTION]}
+declare -r g_ncvTypeMarkers=${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}
 
 # Error/status codes
 declare -ri ERR_INVALID_TYPE=${tt[INVALID_TYPE]}   # Converts ${tt[INVALID_TYPE]} to a number
 
 ########################################################################
 # Simulate modifiable function arguments as in pass-by-pointer/reference.
-# Implementation consists of global variables and several functions, {s,g}etReturnValues()
+# The implementation consists of a collection of global variables and
+# several functions which are their sole direct manipulators
+########################################################################
 g_storage=""
 g_storage1=""
 g_storage2=""
@@ -83,13 +86,13 @@ g_storage7=""
 ########################################################################
 function setReturnValues()
 {
-    declare -i i
-    local givenValue storageCell 
+    declare -i _i
+    local _givenValue _storageCell
 
-    for ((i=1; i<=$#; i++)); do
-        storageCell="g_storage"$i
-        givenValue=${!i}
-        eval $storageCell='$givenValue'
+    for ((_i=1; _i<=$#; _i++)); do
+        _storageCell="g_storage"$_i
+        _givenValue=${!_i}
+        eval $_storageCell='$_givenValue'
     done
 
     g_storage=${g_storage1}
@@ -108,18 +111,18 @@ function setReturnValue() { setReturnValues "$1"; }
 ########################################################################
 function getReturnValues()
 {
-    declare -i i
-    local givenVariable value storageCell
+    declare -i _i
+    local _givenVariable _value _storageCell
 
     if [[ -z $g_storage ]]; then
         g_storage=${g_storage1}
     fi
 
-    for ((i=1; i<=$#; i++)); do
-        givenVariable=${!i}
-        storageCell="g_storage"$i
-        value=${!storageCell}
-        eval $givenVariable='$value'
+    for ((_i=1; _i<=$#; _i++)); do
+        _givenVariable=${!_i}
+        _storageCell="g_storage"$_i
+        _value=${!_storageCell}
+        eval $_givenVariable='$_value'
     done
 }
 
@@ -131,7 +134,8 @@ function getReturnValue() { getReturnValues "$1"; }
 ########################################################################
 function appendReturnValue() 
 {
-    local givenVariable=${!1}
-    eval $givenVariable+='$g_storage'
+    declare -i _i=1
+    local _givenVariable=${!_i}
+    eval $_givenVariable+='$g_storage'
 }
 
