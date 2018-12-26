@@ -67,7 +67,7 @@ function parseQueryClause()
             case $nextLetter in
                 ${tt[BEGIN_NCV]})
                     # Determine the NCV type and the expression side
-                    [[ $inputStream =~ ${tokenDelimiter}([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}]) ]]
+                    [[ $inputStream =~ ${tokenDelimiter}([$g_ncvTypeMarkers]) ]]
                     currentNcvType=${BASH_REMATCH[1]}
                     if [[ "$currentNcvType" == "${tt[END_NCV]}" ]]; then
                         currentSide=$LEFT_SIDE
@@ -84,7 +84,7 @@ function parseQueryClause()
                     # Begin counting tokens
                     tokensInNCV=0
                     ;;
-                [${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])
+                [$g_ncvTypeMarkers])
                     currentNcvType=""
                     currentSide=""
                     finalTokenCount=$tokensInNCV; tokensInNCV=""
@@ -113,7 +113,7 @@ function parseQueryClause()
                 g_compoundTokenBuffer=${g_compoundTokenBuffer/$g_compoundTokenType/${tt[FUNCTION]}}
                 g_compoundTokenType=${tt[FUNCTION]}
 
-                # Stream the token with the function parenthesis indicator
+                # Stream the pending token followed by a function parenthesis token
                 streamToken ${tt[BEGIN_FUNCTION]}$globalNestingLevel; appendReturnValue outputStream
 
             else
@@ -223,7 +223,7 @@ function parseQueryClause()
             # a quote mark that follows a "word" tells us it was not really a word but the start of a literal value that has yet
             # to terminate. (We include the % sign among these characters on the assumption that it appears as the SQL globbing
             # operator. We have code elsewhere that corrects this assumption if it turns out to be the modulus operator instead.)
-            local nonwordExtenders=[_%${eitherQuote}]
+            local nonwordExtenders="_%"${eitherQuote}
 
             if ((funcNestingLevel==0)); then
                 # Outside function calls, we interpret commas as delimiters appearing within lists, which are non-word values.
@@ -235,20 +235,22 @@ function parseQueryClause()
 
             # If the next character is not a "nonword extender", i.e. it serves to terminate an actual word,
             # then process the word as a true word
-            if [[ ! $nextChar =~ $nonwordExtenders ]]; then
-
+            if [[ "$nextChar" != "_" && "$nextChar" != "%" && "$nextChar" != "'" && "$nextChar" != '"'
+                && ( "$nextChar" != "," || $funcNestingLevel -gt 0 ) ]]; then
+            #if [[ ! "$nextChar" =~ [${nonwordExtenders}] ]]; then
 
                 # If the word begins with a "*", it is a true word only when the "*" is preceded by another operator
                 # or by certain other special characters. Otherwise it is the "times" operator. If it turns out to be
                 # the latter, we dump the "*" to the outputStream and continue the main token processing loop
-                if [[ ($letter == '*') && -n "$previousLetter" && (! "+-*/ (&|" =~ "$previousLetter") ]]; then
-                    streamToken ${tt[OPERATOR]}${globalNestingLevel}$letter; appendReturnValue outputStream
-                    advanceStream "$inputStream"; getReturnValue inputStream
-                    continue
-
+                if [[ $letter == '*' && -n "$previousLetter" ]]; then
+                    local specialChars="+-*/ (&|"
+                    if [[ ! "$specialChars" =~ "$previousLetter" ]]; then   # break up conditional to play nice with debugger
+                        streamToken ${tt[OPERATOR]}${globalNestingLevel}$letter; appendReturnValue outputStream
+                        advanceStream "$inputStream"; getReturnValue inputStream
+                        continue
+                    fi
                 else
-                    # Mark this as a (possible sequence of) expandable words. This enables us to process word sequences
-                    # such as "DISTINCT foobar" and "INTERVAL n DAY".
+                    # Mark this as a (possible sequence of) expandable words
                     bufferToken "$rawToken" ${tt[EXPANDABLE_WORD]}
 
                     # Proceed to the next token
@@ -281,7 +283,7 @@ function parseQueryClause()
         fi
 
         # (2) Stream quoted literals.
-        if [[ $letter =~ [${eitherQuote}] ]]; then
+        if [[ $letter == "'" || $letter == '"' ]]; then
             retrieveFullToken
             bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
             continue
