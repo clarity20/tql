@@ -99,6 +99,53 @@ g_tableExpansionMacros=\
 "
 "
 
+################################################################################
+# applyTransformations(expr, transform list)
+#
+# Applies a set of transformations to an expression.
+# Each transform specifies a type (a function name), an operator token,
+# a starting token, and an ending token
+################################################################################
+function applyTransformations()
+{
+    local expression=$1
+    declare -a transformations=($2)
+    local xform name operatorId leftId rightId
+    local td=$tokenDelimiter
+    local subexpression leftSide rightSide newExpression
+    declare -ri dummyValue=0
+
+    for xform in ${transformations[@]}; do
+        # Parse the transformation descriptor
+        [[ $xform =~ (.*):(.*):(.*):(.*) ]]
+        name=${BASH_REMATCH[1]}
+        operatorId=${BASH_REMATCH[2]}
+        leftId=${BASH_REMATCH[3]}
+        rightId=${BASH_REMATCH[4]}
+
+        # Parse the subexpression to be transformed
+        [[ "$expression" =~ ($td$leftId.*)$td$operatorId[^${td}]+($td(.*$td)?$rightId[^${td}]+) ]]
+        subexpression=${BASH_REMATCH[0]}
+        leftSide=${BASH_REMATCH[1]}
+        rightSide=${BASH_REMATCH[2]}
+
+        # Construct the transformation. Use a filler value for the numeric markup.
+        newExpression=$td$dummyValue${tt[EXPANDED_FUNCTION]}$name     # function name
+        newExpression+=$td$dummyValue${tt[BEGIN_FUNCTION]}$dummyValue # left parenthesis
+        newExpression+=$leftSide                                      # first operand
+        newExpression+=$td$dummyValue${tt[DELIMITER]}$dummyValue      # comma separator
+        newExpression+=$rightSide                                     # second operand
+        newExpression+=$td$dummyValue${tt[END_FUNCTION]}$dummyValue   # right parenthesis
+        newExpression+=${tt[FUNCTION_ARITY]}$dummyValue               # function arity
+
+        # Overwrite the original text with the transformation
+        expression=${expression/$subexpression/$newExpression}
+    done
+
+    setReturnValues "$expression"
+}
+
+
 ####################################################################################
 # smartExpandExpression (expr)
 # Expands the possibly-abbreviated words in a marked-up expression, in three phases:
@@ -134,7 +181,7 @@ function smartExpandExpression()
             # Column name abbreviation
             columnTokenIDs[columnCount]=$tokenNumber
             inputColumnNames[columnCount]=$currentAbbr
-            getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; getReturnValues columnLists[columnCount]
+            getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; getReturnValue columnLists[columnCount]
             ((columnCount++))
         elif [[ $expansionType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
             # Abbreviated word sequence
@@ -147,7 +194,7 @@ function smartExpandExpression()
             functionTokenIDs[functionCount]=$tokenNumber
             inputFunctionNames[functionCount]=$currentAbbr
 #MMMM Needs finishing:
-            getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; getReturnValues functionLists[functionCount]
+            getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; getReturnValue functionLists[functionCount]
             ((functionCount++))
         fi
     done
@@ -429,9 +476,9 @@ function evaluateTree()
             leftmostTokenId=${BASH_REMATCH[1]}
             [[ $rightSide =~ (.*)$tokenDelimiter([0-9]+) ]]
             rightmostTokenId=${BASH_REMATCH[2]}
-            transformation+="."$operatorTokenId
-            transformation+="."$leftmostTokenId
-            transformation+="."$rightmostTokenId
+            transformation+=":"$operatorTokenId
+            transformation+=":"$leftmostTokenId
+            transformation+=":"$rightmostTokenId
             transformSignature[transformCount++]=$transformation
         fi
         setReturnValue "$resultantType"
@@ -574,7 +621,7 @@ function lookupResultantTypeAndTrans()
         : ${resultantType:=${tt[INVALID_TYPE]}}
     fi
 
-    setReturnValues resultantType transformation
+    setReturnValues "$resultantType" "$transformation"
 }
 
 ####################################################################################
@@ -637,7 +684,7 @@ function getExpandedColumnNames()
     parserSetupCommand=setupColumnInfoParser
     matchFinderCommand=generateColumnNameMatches
     finalizeExpandedNameCommand=finalizeExpandedColumnName
-    _expand_substitutionMacros=$g_columnExpansionMacros
+    customAbbreviations=$g_columnExpansionMacros
 
     expandAbbreviatedName "$@"
     return $?
@@ -648,7 +695,7 @@ function getExpandedTableNames()
     parserSetupCommand=setupTableInfoParser
     matchFinderCommand=generateTableNameMatches
     finalizeExpandedNameCommand=finalizeExpandedTableName
-    _expand_substitutionMacros=$g_tableExpansionMacros
+    customAbbreviations=$g_tableExpansionMacros
 
     expandAbbreviatedName "" "$@"    # $1 is for column-name expansion only
     return $?
@@ -659,7 +706,7 @@ function getExpandedFunctionNames()
     parserSetupCommand=setupFunctionInfoParser
     matchFinderCommand=generateFunctionNameMatches
     finalizeExpandedNameCommand=finalizeExpandedFunctionName
-    _expand_substitutionMacros=$g_functionExpansionMacros
+    customAbbreviations=$g_functionExpansionMacros
 
     expandAbbreviatedName "" "$@"    # $1 is for column-name expansion only
     return $?
@@ -677,12 +724,12 @@ function getExpandedFunctionNames()
 ############################################################################################
 function expandAbbreviatedName()
 {
-    local nameAbbr=$2
+    local nameAbbr=$2 localCustomAbbreviations=$3
 
-    local macroSubstitutionList="$3"$'\n'$_expand_substitutionMacros
+    local customAbbreviations="$localCustomAbbreviations"$'\n'$globalCustomAbbreviations
     local matchingName
     local finalName finalType    # The return values. finalType is also used as an error indicator for bad input
-    declare -i numCandidates=0 abbrLength retVal=0
+    declare -i numCandidates=0 retVal=0
 
     declare -a _expand_matchList
     local      _expand_nameRegex
@@ -712,7 +759,7 @@ function expandAbbreviatedName()
 
         # First create a sequence of words marked as either atomic or expandable.  (no mark -> atomic,  dot mark -> expandable)
         set -f
-        expandFully "$nameAbbr" "$macroSubstitutionList"
+        expandFully "$nameAbbr" "$customAbbreviations"
         getReturnValue _expand_nameRegex
 
         # If there are expandable abbreviations, work with them...
@@ -800,29 +847,26 @@ function expandAbbreviatedName()
         fi
     fi
 
+    local finalCandidateList
+
     # If all of the above techniques failed, return the abbreviation as-is and set an error code
     if ((numCandidates == 0)); then
-        setReturnValue "$nameAbbr${delim2}"""
+        finalCandidateList="$nameAbbr${delim2}"""; setReturnValue "$finalCandidateList"
         return 1
     fi
 
     # If any of the above techniques gave us a single definitive answer, then use it
     if ((numCandidates == 1)); then
-        setReturnValue "${_expand_matchList[0]//$delim/$delim2}"   # Change the delimiting of the pieces for convenience.
+        # Change the delimiting of the fields for consistency.
+        finalCandidateList="${_expand_matchList[0]//$delim/$delim2}"; setReturnValue "$finalCandidateList"
         return 0
 
     # If multiple matches turned up, address the ambiguity
     elif ((numCandidates > 1)); then
 
         local currCandidate
-        local candidateIndex=0
-        abbrLength=${#nameAbbr}
-        local k abbrCapitals
-        for ((k=0; k<abbrLength; k++)); do
-            if [[ ${nameAbbr:$k:1} =~ [A-Z] ]]; then
-                abbrCapitals+=${nameAbbr:$k:1}
-            fi
-        done
+        declare -i candidateIndex=0
+        local matchCapitals abbrCapitals=${nameAbbr//@([[:lower:]])/}
         unset capitalMatchIndices
         local capitalMatchesCount=0
 
@@ -830,23 +874,19 @@ function expandAbbreviatedName()
         # Otherwise, we pick out those candidates which are exact matches at the word boundaries.
         for currCandidate in "${_expand_matchList[@]}"; do
 
-            matchingName=${currCandidate%%${delim}*}  # The name is the first field of the candidate record
+            # Parse the name out of the candidate record
+            matchingName=${currCandidate%%${delim}*}
 
-            # To detect exact matches it is enough to compare the lengths of the abbreviation and the matching candidate,
+            # To detect "abbreviations" which spell out a candidate name exactly, it is enough to compare their lengths
             # since the match algorithm is monotone-expanding.
-            if [[ $abbrLength == ${#matchingName} ]]; then
-                setReturnValue "${currCandidate//$delim/$delim2}"
+            if [[ ${#nameAbbr} == ${#matchingName} ]]; then
+                finalCandidateList="${currCandidate//$delim/$delim2}"; setReturnValue "$finalCandidateList"
                 return 0
             fi
 
             # Identify non-exact matches which match exactly at the word boundaries (denoted by capital letters).
             # This is our criterion when there are no perfect matches.
-            local j matchCapitals
-            for ((j=0; j<${#matchingName}; j++)); do
-                if [[ ${matchingName:$j:1} =~ [A-Z] ]]; then
-                    matchCapitals+=${matchingName:$j:1}
-                fi
-            done
+            matchCapitals=${matchingName//@([[:lower:]])/}
             if [[ "$abbrCapitals" == "$matchCapitals" ]]; then
                 ((capitalMatchIndices[capitalMatchesCount++] = candidateIndex))
             fi
@@ -856,8 +896,10 @@ function expandAbbreviatedName()
         done
 
         # If we get here, we have only true-abbreviations which match at the word boundaries ...
+
+        # A solitary match is returned immediately
         if ((capitalMatchesCount == 1)); then
-            setReturnValue "${_expand_matchList[capitalMatchIndices[0]]//$delim/$delim2}"
+            finalCandidateList="${_expand_matchList[capitalMatchIndices[0]]//$delim/$delim2}"; setReturnValue "$finalCandidateList"
             unset capitalMatchIndices
             return 0
 
@@ -874,12 +916,12 @@ function expandAbbreviatedName()
 
             # Redelimit the records with the primary delimiter
             OLDFS=$IFS; IFS=$'\n'
-            setReturnValues "${expand_matchList[*]}"
+            finalCandidateList="${_expand_matchList[*]}"; setReturnValue "$finalCandidateList"
             IFS=$OLDFS
             return 0
 
         else # no matches.
-            setReturnValue "$nameAbbr${delim2}"""
+            finalCandidateList="$nameAbbr${delim2}"""; setReturnValue "$finalCandidateList"
             unset capitalMatchIndices
             return 2
         fi

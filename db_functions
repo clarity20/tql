@@ -907,7 +907,7 @@ function generateWhereClause()
                 advanceStream "$rhs" ${BASH_REMATCH[0]}; getReturnValue rhs
 
                 # Retrieve the end delimiter
-                [[ $rhs =~ $tokenDelimiter([${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}])([0-9]+)(.*) ]]
+                [[ $rhs =~ $tokenDelimiter([$g_ncvTypeMarkers])([0-9]+)(.*) ]]
                 ncv=${rhs%${BASH_REMATCH[0]}}
                 ncvType=${BASH_REMATCH[1]}
                 tokenCount=${BASH_REMATCH[2]}
@@ -1029,16 +1029,14 @@ function normalizePredicate()
         sql+=" ("
     fi
 
-    smartExpandExpression "$predicate"; getReturnValue predicate
+    local transformations
+    smartExpandExpression "$predicate"; getReturnValues predicate transformations
+    applyTransformations "$predicate" "$transformations"
 
 # Eventually:
 
-# Perform any transformations that are called for
-
 # Construct the SQL. How we do it depends on the existence and complexity of the left
 # and right sides and the types of tokens they contain
-
-
 
 # Superseded by the new code above:
 #    if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then
