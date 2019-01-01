@@ -29,7 +29,9 @@ tt=(
     [BEGIN_NCV]='n'
     [OPERATOR]='O'
     [PREFIX_LIST]='P'
+    [ALNUM_REGEX]='r'
     [REGEX_LIST]='R'
+    [ALNUM_LIST]='s'
     [SPACE]='S'             # distinguishes cosmetic spaces from spaces inside other tokens
     [TIME]='T'
     [TIMESTAMP]='t'
@@ -53,7 +55,7 @@ tt=(
 
     [DELIMITER]=','
 
-    [ANY_TYPE]=.
+    [ANY_TYPE]='?'          # generic value placeholder
     [INVALID_TYPE]=1        # This doubles as an error code so it must be a number
 )
 
