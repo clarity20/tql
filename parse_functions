@@ -294,9 +294,6 @@ function parseQueryClause()
             rawToken+=${BASH_REMATCH[1]}     # Use plus-equals to keep the NULL prefix ("-,") if it's there
             inputStream=${BASH_REMATCH[2]}
 
-#TODO Test single-char tokens, esp. "%" which can be the modulus operator or the SQL globbing operator. We'll assume the latter case holds
-#TODO if and only if either the NCV or its inputStream consists solely of "%".
-
             tokenType=${tt[STRING_CONSTANT]}
 
             # Probe forward across all quoted pieces and embedded NULLs to make sure we have the complete token
@@ -594,7 +591,7 @@ function advanceStream()
 function processPercentSignToken()
 {
     local rawToken="$1" side=$2 wasLeftModulus=$3
-    if [[ $rawToken =~ ([^%]*)%([^%]*) ]]; then
+    if [[ $rawToken =~ ([^%]*)%(.*) ]]; then
         local leftSide=${BASH_REMATCH[1]}
         local rightSide=${BASH_REMATCH[2]}
         local tokenType
@@ -795,7 +792,7 @@ function retrieveFullToken()
         fi
     done
 
-    case tokenType in
+    case $tokenType in
         $regexListTypeFlag)
             tokenType=${tt[REGEX_LIST]} ;;
         $regexTypeFlag)

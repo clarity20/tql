@@ -50,7 +50,7 @@ tt=(
     [BEGIN_FUNCTION]='['
     [END_FUNCTION]=']'
     [END_NCV]='/'      [TYPE_NCV]='/'    # let the end markers / type names be synonymous
-    [END_CV]='\'       [TYPE_CV]='\'
+    [END_CV]='_'       [TYPE_CV]='_'
     [END_V]='|'        [TYPE_V]='|'
 
     [DELIMITER]=','
