@@ -31,7 +31,6 @@ declare -r delim=$'\n'
 declare -r delim2=$'\f'
 declare -r ILLEGAL_DEFAULT_ALPHA=illegalDefaultAlpha
 declare -r ILLEGAL_DEFAULT_NUM=illegalDefaultNum
-declare -r NULL_INDICATOR=-
 declare -r placeholderForEmpty=" "
 declare -r defaultAction=SELECT
 declare -r setClauseMarker="@"

@@ -5,6 +5,8 @@ declare -r FALSE=0
 declare -r LEFT_SIDE=0
 declare -r RIGHT_SIDE=1
 
+declare -r NULL_INDICATOR="-"
+
 declare -r strongQuote="'"
 declare -r weakQuote='"'
 declare -r eitherQuote=$strongQuote$weakQuote
@@ -29,7 +31,9 @@ tt=(
     [BEGIN_NCV]='n'
     [OPERATOR]='O'
     [PREFIX_LIST]='P'
+    [ALNUM_REGEX]='r'
     [REGEX_LIST]='R'
+    [ALNUM_LIST]='s'
     [SPACE]='S'             # distinguishes cosmetic spaces from spaces inside other tokens
     [TIME]='T'
     [TIMESTAMP]='t'
@@ -48,12 +52,13 @@ tt=(
     [BEGIN_FUNCTION]='['
     [END_FUNCTION]=']'
     [END_NCV]='/'      [TYPE_NCV]='/'    # let the end markers / type names be synonymous
-    [END_CV]='\'       [TYPE_CV]='\'
+    [END_CV]='_'       [TYPE_CV]='_'
     [END_V]='|'        [TYPE_V]='|'
 
     [DELIMITER]=','
 
-    [ANY_TYPE]=.
+    [NULL_TYPE]=$NULL_INDICATOR
+    [ANY_TYPE]='?'          # generic value placeholder
     [INVALID_TYPE]=1        # This doubles as an error code so it must be a number
 )
 

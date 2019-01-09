@@ -42,7 +42,7 @@ function parseQueryClause()
     declare -i NCVCount=0
     local rawToken outputStream=""
     local letter="" previousLetter nextLetter
-    local tokensInNCV="" finalTokenCount currentNcvType currentSide
+    local tokensInNCV="" finalTokenCount currentNcvType currentSide tokenType
     declare -i wasLeftSideModulus=$FALSE
 
     # Preprocess the input string: clean up escape sequences and delimit the NCV subexpressions
@@ -262,13 +262,15 @@ function parseQueryClause()
 
         #####################################
         #
-        # Next we handle any string-like tokens that are guaranteed not to be expandable words; these are string constants.
+        # Next we handle any string-like tokens that are guaranteed not to be expandable words;
+        # these tokens can be either string constants, regexes, lists, or regex lists.
         #
-        # We break this task down according to the major possibilities:
-        # (1) The token starts with a NULL indicator "-,". We make note of the indicator and then look at whatever follows it, as in items (2)-(4).
-        # (2) The token starts with a quoted literal: "..." or '...'
-        # (3) The "most normal" case: an alnum-type token; this would be either a simple or complex token starting with [[:upper:]_%] or a complex
-        # token starting with [[:lower:]].
+        # We break this task down in terms of the following possibilities:
+        # (1) The token starts with a NULL indicator "-," or "-". We make note of the indicator
+        #     and then in cases of "-," we look at whatever follows it as per items (2)-(4).
+        # (2) The token starts with a quoted literal: "..[stuff].." or '..[stuff]..'
+        # (3) The "most normal" case, an alphanumeric-type token; this would be either a simple or
+        #     a complex token starting with [[:upper:]_%] or a complex token starting with [[:lower:]].
         # (4) The token starts with a digit sequence but is not a numeric token.
         #
         #####################################
@@ -278,14 +280,19 @@ function parseQueryClause()
             rawToken=${BASH_REMATCH[1]}
             advanceStream "$inputStream" $rawToken; getReturnValue inputStream
             letter=${inputStream:0:1}
+        # (1a) Stream solitary NULL values as separate tokens
+        elif [[ $inputStream =~ ^-([^[:alnum:].]|$) ]]; then
+            streamToken ${tt[NULL_TYPE]}; appendReturnValue outputStream
+            advanceStream "$inputStream" 1; getReturnValue inputStream
+            continue
         else
             rawToken=""
         fi
 
         # (2) Stream quoted literals.
         if [[ $letter == "'" || $letter == '"' ]]; then
-            retrieveFullToken
-            bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
+            retrieveFullToken "$inputStream" "$rawToken"; getReturnValues rawToken inputStream tokenType
+            bufferToken "$rawToken" $tokenType
             continue
 
         # (3) Stream "normal" alpha-like string tokens.
@@ -294,15 +301,14 @@ function parseQueryClause()
             rawToken+=${BASH_REMATCH[1]}     # Use plus-equals to keep the NULL prefix ("-,") if it's there
             inputStream=${BASH_REMATCH[2]}
 
-#TODO Test single-char tokens, esp. "%" which can be the modulus operator or a single-character SQL regex. We'll assume the latter case holds
-#TODO if and only if either the NCV or its inputStream consists solely of "%".
+            tokenType=${tt[STRING_CONSTANT]}
 
             # Probe forward across all quoted pieces and embedded NULLs to make sure we have the complete token
             if [[ ($inputStream =~ ^[$eitherQuote]) || ($inputStream =~ ^- && $rawToken =~ ,$) ]]; then
                 letter=${inputStream:0:1}
 
                 # The token has additional sub-pieces. Grab the whole token.
-                retrieveFullToken
+                retrieveFullToken "$inputStream" "$rawToken"; getReturnValues rawToken inputStream tokenType
             fi
 
             # Tokens having a percent sign in the middle need to be "decoded" to be properly understood
@@ -312,7 +318,7 @@ function parseQueryClause()
                 continue
             # Normal tokens can be buffered as-is
             else
-                bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
+                bufferToken "$rawToken" $tokenType
                 continue
             fi
 
@@ -330,10 +336,12 @@ function parseQueryClause()
                 rawToken+=$tmpToken
                 inputStream=$tmpStream
 
+                tokenType=${tt[STRING_CONSTANT]}
+
                 # Probe forward across all quoted or NULL parts to get the complete token
                 if [[ ($inputStream =~ ^[$eitherQuote]) || ($inputStream =~ ^- && $rawToken =~ ,$) ]]; then
                     letter=${inputStream:0:1}
-                    retrieveFullToken
+                    retrieveFullToken "$inputStream" "$rawToken"; getReturnValues rawToken inputStream tokenType
                 fi
 
                 # Tokens having a percent sign in the middle need to be "decoded" to be properly understood
@@ -343,7 +351,7 @@ function parseQueryClause()
                     continue
                 # Normal tokens can be buffered as-is
                 else
-                    bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
+                    bufferToken "$rawToken" $tokenType
                     continue
                 fi
             fi
@@ -590,7 +598,7 @@ function advanceStream()
 function processPercentSignToken()
 {
     local rawToken="$1" side=$2 wasLeftModulus=$3
-    if [[ $rawToken =~ ([^%]*)%([^%]*) ]]; then
+    if [[ $rawToken =~ ([^%]*)%(.*) ]]; then
         local leftSide=${BASH_REMATCH[1]}
         local rightSide=${BASH_REMATCH[2]}
         local tokenType
@@ -616,7 +624,7 @@ function processPercentSignToken()
             wasLeftModulus=$TRUE
         else
             # Interpret the % sign as the globbing operator and stream the entire rawToken as a single token.
-            bufferToken "$rawToken" ${tt[STRING_CONSTANT]}
+            bufferToken "$rawToken" ${tt[ALNUM_REGEX]}
         fi
     fi
 
@@ -724,31 +732,44 @@ function delimitNCVsInString()
 }
 
 ####################################################################################
-# retrieveFullToken
+# retrieveFullToken( stream, token )
 #
-# Given a value token of string-like type, advance the lexer through all adjacent pieces of quoted
-# and non-quoted text in order to obtain the complete token
+# Given a constant-value token of string-like type, advance the lexer through all adjacent pieces of quoted
+# and non-quoted text in order to obtain the complete token.
 ####################################################################################
 function retrieveFullToken()
 {
+    local inputStream=$1 tokenInProgress=$2
+    local tokenPiece=$tokenInProgress
+    declare -ri basicTypeFlag=0 listTypeFlag=1 regexTypeFlag=2 regexListTypeFlag=3
+
+    # Initialize the token type based on the leading token piece
+    local tokenType=$basicTypeFlag
+    if [[ $tokenPiece =~ [%_] ]]; then
+        ((tokenType|=regexTypeFlag))
+    fi
+    if [[ $tokenPiece =~ , ]]; then
+        ((tokenType|=listTypeFlag))
+    fi
+
     while ((1)); do
 
         # Handle the present "feature" in the token: an embedded NULL indicator, a quoted piece or an orphaned quote character
 
         # Check for embedded NULL
-        if [[ ($inputStream =~ ^-) && ($rawToken =~ ,$) ]]; then
+        if [[ ($inputStream =~ ^-) && ($tokenInProgress =~ ,$) ]]; then
             # Append it, leaving the following comma in place if there is one.
-            rawToken+="-"
+            tokenInProgress+="-"
             inputStream=${inputStream:1}
 
         # Check for a quoted literal: match the quote to its companion
         elif [[ $inputStream =~ ^${letter}([^${letter}]*)${letter}(.*) ]]; then
-            rawToken+=${BASH_REMATCH[1]}    # Strip off the surrounding quotes before tokenizing.
+            tokenInProgress+=${BASH_REMATCH[1]}    # Strip off the surrounding quotes before tokenizing.
             inputStream=${BASH_REMATCH[2]}
 
         # Otherwise assume we have an orphaned " or ' character. Peel it off.
         else
-            rawToken+=$letter
+            tokenInProgress+=$letter
             inputStream=${inputStream:1}
         fi
 
@@ -759,8 +780,17 @@ function retrieveFullToken()
 
         # If not terminated, advance through the following "featureless" part of the token
         [[ $inputStream =~ ^([[:alnum:],_%]+)(.*) ]]
-        rawToken+=${BASH_REMATCH[1]}
+        tokenPiece=${BASH_REMATCH[1]}
+        tokenInProgress+=$tokenPiece
         inputStream=${BASH_REMATCH[2]}
+
+        # Glean information about the token type from the special characters since they are not quote-protected
+        if [[ $tokenPiece =~ [%_] ]]; then
+            ((tokenType|=regexTypeFlag))
+        fi
+        if [[ $tokenPiece =~ , ]]; then
+            ((tokenType|=listTypeFlag))
+        fi
 
         # Check the termination conditions
         letter=${inputStream:0:1}
@@ -768,6 +798,19 @@ function retrieveFullToken()
             break
         fi
     done
+
+    case $tokenType in
+        $regexListTypeFlag)
+            tokenType=${tt[REGEX_LIST]} ;;
+        $regexTypeFlag)
+            tokenType=${tt[ALNUM_REGEX]} ;;
+        $listTypeFlag)
+            tokenType=${tt[ALNUM_LIST]} ;;
+        $basicTypeFlag)
+            tokenType=${tt[STRING_CONSTANT]} ;;
+    esac
+
+    setReturnValues "$tokenInProgress" "$inputStream" "$tokenType"
 }
 
 
