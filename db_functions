@@ -38,9 +38,6 @@ declare -r updateOperator=':='
 declare -r MIN_VALUE_LEN=1       # min/max length of values supplied on the command line
 declare -r MAX_VALUE_LEN=1024
 
-# Syntax for indicating filenames (or stdin) as data sources
-declare -r embeddedFileRegex="@(.*)@"
-
 # Assign defaults for values used in many caller scripts
 g_defaultNums=$ILLEGAL_DEFAULT_NUM
 g_defaultNumCodes=0i
@@ -153,11 +150,6 @@ function parseCompletely()
     isOptionOn noHeader $OPTIONS
     if (($?)); then g_dbClientOptions+="-N "; fi
 
-#TODO We defer where-expanding to generateWhereClause
-#    # Get the column names from the where-particles
-#    getWhereColumnList "$@"
-#    whereAbbrs=$g_returnString
-
     # Expand the abbreviated names unless directed otherwise
     isOptionOn "dontExpand|de" $OPTIONS
     if (($?)); then
@@ -173,13 +165,6 @@ function parseCompletely()
         # TODO This looks at the first table name only.  Might revisit this later. N.B. expand() requires a fixed-width Desc, so catting
         # TODO the separate desc files together would not work. Perhaps make Desc adjust its column-width values whenever a header line is encountered...
         loadTableDescription ${TQL_SCHEMA_CACHE:-$TQL_HOME/tableDesc/${TABLE_NAMES%%,*}}
-
-#TODO Defer where-expanding to generateWhereClause
-#        # Expand the WHERE clause column names
-#        expandColumnNames "$TABLE_NAMES" "$whereAbbrs"
-#        expandedNames=$g_returnString
-#        expandedWhereCols=${expandedNames%$delim*}
-#        whereCodes=${expandedNames#*$delim}
 
         if ((bIsUpdate)); then
             # Expand the SET clause column names and finish off the clause itself
@@ -233,8 +218,6 @@ function parseCompletely()
     fi
 
     # Build the core WHERE-clause by lexing, parsing and expanding the arguments and translating to SQL.
-#TODO Defer (etc.):
-#    generateWhereClause "$expandedWhereCols" "$whereCodes" "$@"
     generateWhereClause "$@"
     retVal=$?
     case $retVal in
@@ -317,7 +300,7 @@ function assembleSelectClause()
     selectClause+=$postselects
 
 #MMMM Temp fix: strip out all of the markup tags, leaving a pure SELECT clause
-#MMMM This means the delims, token counts and type indicators. (But for NCV delims there are no counts.)
+#MMMM This means the delims, token counts and type indicators. (But for pred delims there are no counts.)
     selectClause=${selectClause//$tokenDelimiter?/}
 
     setReturnValue "$selectClause"
@@ -593,7 +576,7 @@ function parseOutOptions()
 }
 
 ##########################################################################################
-# expandValueSet  valueSet  valueType
+# expandInterval (interval, intervalType)
 #
 # Expands two types of possibly-abbreviated value sets into their full-length equivalents:
 #   (1) ranges (numeric or date) --> pairs of interval endpoints
@@ -603,12 +586,12 @@ function parseOutOptions()
 #   (2) prefix lists --> normal lists
 #         e.g.  "1002003:00,99" --> "100200300,100200399"   (use : after prefix, commas to delimit)
 ##########################################################################################
-function expandValueSet()
+function expandInterval()
 {
     local first=${1%[-:]*}
     local second=${1#*[-:]}
     local filler='???????????????'
-    declare -r NUM_RANGE=1 DATE_RANGE=2 PREFIX_LIST=3
+    declare -r NUM_RANGE=1 DATE_RANGE=2
     local firstArg secondArg response
 
     if (($2 == NUM_RANGE)); then
@@ -663,12 +646,8 @@ function expandValueSet()
         response+=$delim
         response+=$secondArg
 
-    elif (($2 == PREFIX_LIST)); then
-        response=:$second
-        response=${response//[:,]/,$first}
-        response=${response#,}
     else
-        response="Not a range or a prefix list."
+        response="Not a range."
     fi
 
     setReturnValue "$response"
@@ -833,9 +812,9 @@ function parseOutSelects()
 ##########################################################################################
 # generateWhereClause  [givenWhereParticles ...]
 #
-# Builds the core WHERE-clause from the supplied arguments. These can be in basic or compound form.
+# Builds the core WHERE-clause from the supplied predicates. These can be in basic or compound form.
 #
-# We call the basic-form arguments "NCV (name-comparator-value)" expressions. If the name is
+# We call the basic-form predicates "NCV (name-comparator-value)" expressions. If the name is
 # omitted it will be inferred based on the global settings g_default{Num,Alnum}Cols. If the comparator
 # is also omitted it will default to "=". Examples of NCV expressions include:
 #
@@ -854,8 +833,7 @@ function generateWhereClause()
     # Declare helper variables
     declare -i numWheres=0 numDftNumCols=0 numDftAlnumCols=0
     declare -a whereComponent
-    local _wheres_bIsList _wheres_bIncludesNull _wheres_bIsRange
-    local name nameType code comparator value
+    local name code comparator value
     local valueType rhs
 
     # Array-ify the column name inference rules
@@ -896,7 +874,7 @@ function generateWhereClause()
         # Break up the argument into its n-c-v predicates. For each predicate, invoke the low-level SQL
         # generators and link the predicates together with the right boolean conjunctions
         while [[ -n $rhs ]]; do
-            local ncv ncvType ncvCounter tokenCount nestingLevel
+            local predicate predicateType ncvCounter totalTokenCount effectiveComparator comparatorPosition nestingLevel
 
             # Pull the next predicate, boolean, or parenthetical token from the parsed string
 
@@ -907,26 +885,27 @@ function generateWhereClause()
 
                 # Retrieve the end delimiter
                 [[ $rhs =~ $tokenDelimiter([$g_ncvTypeMarkers])([0-9]+)(.*) ]]
-                ncv=${rhs%${BASH_REMATCH[0]}}
-                ncvType=${BASH_REMATCH[1]}
-                tokenCount=${BASH_REMATCH[2]}
+                predicate=${rhs%${BASH_REMATCH[0]}}
+                predicateType=${BASH_REMATCH[1]}
+                totalTokenCount=${BASH_REMATCH[2]}
                 rhs=${BASH_REMATCH[3]}
 
                 # "Clean up" the predicate. Open with "(" or "NOT (" as appropriate.
-                normalizePredicate $ncvType "$ncv"
+                # Perform expansions and transformations.
+                normalizePredicate $predicateType "$predicate"; getReturnValues predicate effectiveComparator comparatorPosition
 
-                # Build the SQL fragment for the current NCV. Choose a builder based on
-                # whether the NCV contains an explicit name.
-                if [[ $ncvType == ${tt[TYPE_NCV]} ]]; then
-                    processNamedNCVArgument
+                # Build the SQL fragment for the current predicate. Choose a builder based on
+                # whether the predicate contains an explicit name.
+                if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then
+                    processNamedNCVArgument "$predicate" $effectiveComparator $comparatorPosition
                 else
-                    processUnnamedNCVArgument
+                    processUnnamedNCVArgument "$predicate" $effectiveComparator $comparatorPosition
                 fi
 
                 sql+=')'   # Needed for complex NCVs like regex lists; superfluous for simple ones
                 continue
 
-            # Left grouping parentheses. Since we are at NCV level, there will be no token counter.
+            # Left grouping parentheses. Since we are at predicate level, there will be no token counter.
             elif [[ $rhs =~ ^$tokenDelimiter${tt[BEGIN_GROUP]}([0-9]+) ]]; then
                 sql+="("
                 nestingLevel=${BASH_REMATCH[1]}
@@ -979,43 +958,22 @@ function generateWhereClause()
 
 
 ########################################################################################################
-# normalizePredicate (predicateType, predicate)
-# A major subroutine of generateWhereClause() that makes sense of a single name-comparator-value predicate
-# and adjusts its components to a uniform, easily-managed format:
-#    Expands embedded filenames to the files' content in the form of comma-separated lists
-#    Expands abbreviated ranges and prefix lists to full value pairs and lists, respectively
-#    Segregates NULLs and sets a special flag for subsequent special handling
-#    Factors out negative comparators as NOTs plus the inverse comparators
-# This subroutine does not generate any SQL except for a prefix of either "(" or "NOT (" as appropriate.
+# getEffectiveComparator (predicate)
+# returns comparator, comparatorPosition
+#
+# Obtains the comparator for a predicate, and if negative, factors out a negator and inverts the comparator
 ########################################################################################################
-function normalizePredicate()
+function getEffectiveComparator()
 {
-    local msg=""
-    local br2
-    local predicateType=$1
-    local predicate=$2
-
-    ((_wheres_bIsList = FALSE))
-    ((_wheres_bIncludesNull = FALSE))
-    ((_wheres_bIsRange = FALSE))
-
-    # The input predicate is formatted with delimiters and markup. Here we break it down
-    # into name, comparator (defaulting to "=") and value. Only the value is guaranteed to be present.
-#TODO Rename name & value to leftSide and rightSide. Careful, they have broad scope.
-    [[ $predicate =~ (.*)${tokenDelimiter}[0-9]+${tt[COMPARATOR]}[0-9]+([=\<\!\>]+)(.*) ]]
-    if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then
-        name=${BASH_REMATCH[1]}
+    local predicate=$1
+    local comparator comparatorPosition
+    
+    if [[ $predicate =~ ${tokenDelimiter}([0-9]+)${tt[COMPARATOR]}[0-9]+([=\<\!\>]+) ]]; then
+        comparatorPosition=${BASH_REMATCH[1]}
         comparator=${BASH_REMATCH[2]}
-        value=${BASH_REMATCH[3]}
-            #TODO For now, chop away all markup and delimiters right here so the code below will run as-is
-            #TODO on simple NCV inputs. This is of course a stopgap measure that won't work with complex inputs.
-            nameType=${name:2:1}    name=${name:3}    # skip the delimiter and count
-            valueType=${value:2:1}  value=${value:3}
     else
+        comparatorPosition=0
         comparator='='
-        value=${BASH_REMATCH[1]}
-            # TODO as just above
-            valueType=${value:2:1}  value=${value:3}
     fi
 
     # If the comparator is negative ('<>' or '!=') then factor out a NOT and invert the comparator
@@ -1028,149 +986,395 @@ function normalizePredicate()
         sql+=" ("
     fi
 
-    local transformations
-    smartExpandExpression "$predicate"; getReturnValues predicate transformations
-    applyTransformations "$predicate" "$transformations"
-
-# Eventually:
-
-# Construct the SQL. How we do it depends on the existence and complexity of the left
-# and right sides and the types of tokens they contain
-
-# Superseded by the new code above:
-#    if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then
-#        expandColumnNames "$TABLE_NAMES" "$name"
-#        name=${g_returnString%$delim*}      # this is the post-processed (expanded) name
-#        code=${g_returnString#*$delim}      # the code tells us how to treat the value
-#    fi
-
-#MMMM: One case of a token that needs unraveling:
-    # Load file- and stdin-sourced lists into regular list values and set the "is list" indicator
-#TODO To get the column name (for stderr), walk the parse tree from the "@@" marker
-#    if [[ "$value" =~ $embeddedFileRegex ]]; then
-#        ((_wheres_bIsList = TRUE))
-#        # If the list is stdin-sourced, prompt the user for the content
-#        if [[ "${BASH_REMATCH[0]}" == @@ ]]; then
-#            if [[ $predicateType == ${tt[TYPE_NCV]} ]]; then msg="for '$name' "; fi
-#            echo '>>> Your values '${msg:-} '(finish with <enter> <ctrl-D>):' > /dev/stderr
-#        fi
-#        # Load and strip the values. Some extra cleanup is needed that doesn't apply to cmdline lists.
-#        loadFileAsCommaList "${BASH_REMATCH[1]:-/dev/stdin}"
-#        value=$g_returnString
-#    else
-#        isArgOfType "$value" list
-#        _wheres_bIsList=$?
-#    fi
-
-#MMMM Avoid special NULL stuff just yet
-#    # If the value includes a NULL marker, set a flag that we will use to treat NULLs in the necessary special way
-#    # without "disturbing" ordinary values.
-#    if [[ $value =~ (^|,)$NULL_INDICATOR(,|$) ]]; then
-#
-#        # Set the NULL flag.
-#        ((_wheres_bIncludesNull = TRUE))
-#
-#        # Remove the NULL marker from list-type values, leaving the normal values in place.
-#        # (In the case of singleton null markers, we leave them alone to distinguish them from empty arguments.
-#        # In all cases we will use the null flag exclusively, disregarding the value, to handle NULLs.)
-#        if ((_wheres_bIsList)); then
-#            br2=${BASH_REMATCH[2]}
-#            if [[ "${BASH_REMATCH[1]}" == , ]]; then br2=; fi
-#            value="${value/${BASH_REMATCH[1]}$NULL_INDICATOR$br2/}"
-#        fi
-#    fi
-
-#MMMM Another case of a token that needs unraveling
-#    # In the case of abbreviated value ranges or lists, expand them to complete interval specs or lists
-#    isArgOfType "$value" "numRange|dateRange|prefixList"
-#    valueType=$?
-#    if ((valueType > 0)); then
-#
-#        # Expand the abbreviated values into complete ones
-#        expandValueSet $value $valueType
-#        value=$g_returnString
-#
-#        # Ranges need to be flagged for subsequent conversion to BETWEEN...AND subclauses
-#        if ((valueType==1 || valueType==2)); then
-#            ((_wheres_bIsRange = TRUE))
-#        fi
-#    fi
-
+    setReturnValues "$comparator" "$comparatorPosition"
 }
 
 ########################################################################################################
-# processNamedNCVArgument
+# normalizePredicate (predicateType, predicate)
+# Processes the marked up token stream for a single name-comparator-value predicate
+# into a format where the corresponding SQL can be generated with a fairly simple left-to-right scan
+# Note: The call to getEffectiveComparator() generates the SQL prefix of either "(" or "NOT (" as appropriate.
+########################################################################################################
+function normalizePredicate()
+{
+    local predicateType=$1
+    local predicate=$2
+    local effectiveComparator
+    declare -i comparatorPosition
+    local transformations
+
+    # "Expand" and "transform" the predicate to its final state from which SQL can be constructed
+    # readily with a single left-to-right pass over the data stream
+    smartExpandExpression "$predicate"; getReturnValues predicate transformations
+    applyTransformations "$predicate" "$transformations"; getReturnValue predicate
+
+    # To further simplify constructing the SQL, we will recast negative comparators as positive
+    # ones by factoring out the implied NOTs. This also makes working with NULLs easier.
+    getEffectiveComparator "$predicate"; getReturnValues effectiveComparator comparatorPosition
+    
+    setReturnValues "$predicate" "$effectiveComparator" "$comparatorPosition"
+}
+
+########################################################################################################
+# processNamedNCVArgument (predicate, effectiveComp, compPosition)
 # A major subroutine of generateWhereClause() that builds a SQL snippet for a name-comparator-value construct
 # whose "name" component is explicitly provided
 ########################################################################################################
 function processNamedNCVArgument()
 {
-    # Turn regex values (singletons or lists) into "LIKE" particles
-    isArgOfType "$value" alnumRegex
-    if (($?)); then
+    local predicate=$1 effectiveComparator=$2 comparatorPosition=$3 
+    local currentToken tokenType tokenValue td=$tokenDelimiter
+    local currentSide=$LEFT_SIDE currentName
+    local firstValue secondValue
+    local filler'=???????????????'
 
-        # The output: "{AND,OR} [NOT] (x LIKE 'y' OR x LIKE 'z' OR ...)"
-        OLDIFS="$IFS"; IFS=","; valueArray=($value)
-        for singleVal in ${valueArray[@]}; do
-            if [[ $singleVal =~ [%_] ]]; then
-                sql+=$name" LIKE '$singleVal' OR "
-            else
-                sql+=$name" = '$singleVal' OR "
-            fi
-        done
-        IFS="$OLDIFS"
+    # Loop over the tokens, generating the right SQL for each. Special token types need to be "unraveled"
+    # beforehand, so we process all tokens case-by-case depending on their type.
+    local tempPredicate=$predicate
+    while [[ -n "$tempPredicate" ]]; do
 
-        if ((_wheres_bIncludesNull)); then
-            sql+=$name" IS NULL "
-        fi
+        # Pick out the next token
+        [[ "$tempPredicate" =~ ^$td[0-9]*(.)([^$td]*)(${td}.*)?$ ]]
+        tokenType=${BASH_REMATCH[1]}
+        currentToken=${BASH_REMATCH[2]}
+        tempPredicate=${BASH_REMATCH[3]}
 
-        sql=${sql% OR }
+        # Extract the token value(s) and type. Special tokens must first be unraveled to their underlying data.
+        case $tokenType in
+            ${tt[NULL_TYPE]})
+                tokenValue="$NULL_INDICATOR"
+                ;;
+            ${tt[SPACE]})
+                tokenValue=" "
+                ;;
+            ${tt[OPERATOR]})
+                [[ "$currentToken" =~ [0-9]+(.*) ]]
+                tokenValue=${BASH_REMATCH[1]}
+                ;;
+            ${tt[COMPARATOR]})
+                # Use the positive comparator, which might not be the original
+                tokenValue=$effectiveComparator
+                ;;
+            [$g_expandedTypes])
+                # Skip the data type of the expanded name
+                [[ "$currentToken" =~ (.)(.*) ]]
+                tokenValue=${BASH_REMATCH[2]}
+                ;;
+            ${tt[END_FUNCTION]})
+                # Trim some extra material from the input expression
+                [[ "$tempPredicate" =~ ^${tt[FUNCTION_ARITY]}[0-9]+(.*) ]]
+                tempPredicate=${BASH_REMATCH[1]}
+                ;;
+            ${tt[FILENAME]})
+                # Unwind the filename token to the underlying list and change the type to the underlying type
+                convertFileTokenToList "$currentToken" "$currentName"
+                getReturnValues tokenValue tokenType
+                ;;
+            ${tt[DATE_RANGE]})
+                # Convert into a pair of interval endpoints
+                expandDateRange "$currentToken"; getReturnValues firstValue secondValue
+                ;;
+            ${tt[INT_RANGE]})
+                # Convert into a pair of interval endpoints
+                [[ $currentToken =~ (.*)-(.*) ]]
+                firstValue=${BASH_REMATCH[1]}
+                secondValue=${BASH_REMATCH[2]}
+                # In case of an abbreviated second value, paste its digits over the end of the first
+                if [[ ${#secondValue} -lt ${#firstValue} ]]; then
+                    secondValue=${firstValue/%${filler:0:${#secondValue}}/$secondValue}
+                fi
+                ;;
+            ${tt[PREFIX_LIST]})
+                # Convert to an integer list
+                [[ $currentToken =~ (.*):(.*) ]]
+                tokenValue=":"${BASH_REMATCH[2]}
+                tokenValue=${tokenValue//[:,]/,${BASH_REMATCH[1]}}
+                tokenValue=${tokenValue#,}
+                tokenType=${tt[INT_LIST]}
+                ;;
+            *)
+                tokenValue=$currentToken
+                ;;
+        esac
 
-    # Turn lists of values into "IN(...)" particles
-    elif ((_wheres_bIsList)); then
-        quoteListIfNeeded "$value" $code; getReturnValue value
+        # Generate the correct SQL for the token data and type
+        case $tokenType in
+            ${tt[NULL_TYPE]})
+                # Isolated (non-list) nulls
+                sql+="IS NULL "
+                pendingEqualsSign=$FALSE
+                ;;
+            ${tt[SPACE]})
+                sql+=$tokenValue
+                ;;
+            ${tt[OPERATOR]})
+                sql+="$tokenValue "
+                ;;
+            ${tt[COMPARATOR]})
+                if [[ $tokenValue == '=' ]]; then
+                    # Proper interpretation of the equals sign depends on the succeeding token
+                    pendingEqualsSign=$TRUE
+                else
+                    sql+="$tokenValue "
+                fi
+                currentSide=$RIGHT_SIDE
+                ;;
+            [$g_expandedTypes])
+                if [[ $pendingEqualsSign == $TRUE ]]; then
+                    sql+="= "
+                    pendingEqualsSign=$FALSE
+                fi
+                currentName=$tokenValue
+                sql+="$tokenValue "
+                ;;
+            ${tt[BEGIN_FUNCTION]})
+                sql+="("
+                ;;
+            ${tt[BEGIN_GROUP]})
+                if [[ $pendingEqualsSign == $TRUE ]]; then
+                    sql+="= "
+                    pendingEqualsSign=$FALSE
+                fi
+                sql+="("
+                ;;
+            [${tt[END_FUNCTION]}${tt[END_GROUP]}])
+                sql+=")"
+                ;;
+            ${tt[DELIMITER]})
+                sql+=", "
+                ;;
+            [${tt[STRING_CONSTANT]}${tt[DATE]}])
+                if [[ $pendingEqualsSign == $TRUE ]]; then
+                    sql+="= "
+                    pendingEqualsSign=$FALSE
+                fi
+                sql+="'$tokenValue' "
+                ;;
+            ${tt[ALNUM_REGEX]})
+                sql+="LIKE '$tokenValue' "
+                pendingEqualsSign=$FALSE
+                ;;
+            ${tt[REGEX_LIST]})
+                regexListToSQL "$tokenValue" "$currentName"; appendReturnValue sql
+                pendingEqualsSign=$FALSE
+                ;;
+            [${tt[DECIMAL]}${tt[INTEGER]}])
+                if [[ $pendingEqualsSign == $TRUE ]]; then
+                    sql+="= "
+                    pendingEqualsSign=$FALSE
+                fi
+                sql+="$tokenValue "
+                ;;
+            ${tt[ALNUM_LIST]})
+                valueListToSQL "$tokenValue" "$currentName" $TRUE; appendReturnValue sql
+                pendingEqualsSign=$FALSE
+                ;;
+            [${tt[FLOAT_LIST]}${tt[INT_LIST]}])
+                valueListToSQL "$tokenValue" "$currentName" $FALSE; appendReturnValue sql
+                pendingEqualsSign=$FALSE
+                ;;
+            ${tt[DATE_RANGE]})
+                sql+="BETWEEN '$firstValue' AND '$secondValue' "
+                pendingEqualsSign=$FALSE
+                ;;
+            ${tt[INT_RANGE]})
+                sql+="BETWEEN $firstValue AND $secondValue "
+                pendingEqualsSign=$FALSE
+                ;;
+            ${tt[FORCED_EXPANSION]})
+                ;;
+            *)
+                echo "Unsupported token type: '$tokenType'"
+                return 1
+                ;;
+        esac
+    done
 
-        # Format lists of floating-point values
-        formatValueIfDecimalList "$value"; getReturnValue value
+}
 
-        # To post-sort the result set, we record the values (without quotes) and the column name, always using the FIRST value list we encounter.
-        if [[ -z $columnToSortBy ]]; then
-            valuesToSortBy=${value//\'/}
-            columnToSortBy=$name
-        fi
+#####################################################################################################
+# convertFileTokenToList (fileName, columnName)
+#
+# Unravels a FILENAME-type token to a list-type token and determines the type of list
+#####################################################################################################
+function convertFileTokenToList()
+{
+    local fileName=$1 columnName=$2 msg
+    local tokenValue tokenType
 
-        # Construct the final piece of SQL
-        if ((_wheres_bIncludesNull)); then
-            sql+="$name IN ($value) OR $name IS NULL"
+    # If the data is stdin-sourced (i.e. no filename was given), prompt the user for it
+    if [[ -z $fileName ]]; then
+        if [[ -n $columnName ]]; then msg="for '$columnName' "; else msg=; fi
+        echo '>>> Your values '$msg '(finish with <enter> <ctrl-D>):' > /dev/stderr
+    fi
+
+    # Load and strip the values. Some extra cleanup is needed that doesn't apply to cmdline lists.
+    loadFileAsCommaList "${fileName:-/dev/stdin}"; getReturnValue tokenValue
+
+    # Discern the underlying data type. (It will be one of the list types, of course.)
+    # Check for numeric types: digits, negative sign (in front only!), decimal point
+    if [[ ( $tokenValue =~ ^[-0-9,.]+$ ) && ! ( $tokenValue =~ [^,]- ) ]]; then
+        if [[ $tokenValue =~ [.] ]]; then
+            tokenType=${tt[FLOAT_LIST]}
         else
-            sql+="$name IN ($value)"
+            tokenType=${tt[INT_LIST]}
         fi
-
-    # Turn value ranges (either dates or numbers) into "BETWEEN...AND" particles
-    elif ((_wheres_bIsRange)); then
-        local lowValue highValue
-        quoteRangeValueIfNeeded "$value" $code; getReturnValue value
-        formatValueIfDecimal "${value%$delim*}"; getReturnValue lowValue
-        formatValueIfDecimal "${value#*$delim}"; getReturnValue highValue
-
-        sql+="$name BETWEEN $lowValue AND $highValue"
-
-    # Turn single values (ints, floats, alnums) into "name = value" particles (or <>, >=, etc.)
+    # An alphabetic type
     else
-
-        # NULL is a special case of a solitary value...
-        if ((_wheres_bIncludesNull)); then
-            sql+="$name IS NULL"
-
-        # The general case for solitary values...
+        if [[ $tokenValue =~ [%_] ]]; then
+            tokenType=${tt[REGEX_LIST]}
         else
-            quoteSingleValueIfNeeded "$value" $code; getReturnValue value
-            formatValueIfDecimal "$value"; getReturnValue value
-
-            sql+="$name $comparator $value"
+            tokenType=${tt[ALNUM_LIST]}
         fi
     fi
+
+    setReturnValues "$tokenValue" "$tokenType"
 }
+
+#####################################################################################################
+# expandDateRange (token)
+#
+# Breaks down a possibly-abbreviated date range into a pair of yyyy-dd-mm dates
+#####################################################################################################
+function expandDateRange()
+{
+    local token=$1 firstValue secondValue
+
+    [[ $token =~ (.*)-(.*) ]]
+    firstValue=${BASH_REMATCH[1]}
+    secondValue=${BASH_REMATCH[2]}
+
+    # Base the parsing on the slash count before/after hyphen:
+    # two before ...
+    if [[ $firstValue =~ /[[:digit:]]+/ ]]; then
+        # First value is complete as-is. As for the second:
+        # two after ...
+        if [[ $secondValue =~ /[[:digit:]]+/ ]]; then
+            secondValue=$secondValue
+        # one after ...
+        elif [[ $secondValue =~ / ]]; then
+            secondValue=${firstValue%%/*}/$secondValue
+        # none after ...
+        else
+            secondValue=${firstValue%/*}/$secondValue
+        fi
+    # one before ...
+    elif [[ $firstValue =~ / ]]; then
+        firstValue=$firstValue/01
+        # one after ...
+        if [[ $secondValue =~ / ]]; then
+            secondValue=$secondValue/31
+        # none after but there is a number ...
+        elif [[ $secondValue =~ [0-9] ]]; then
+            secondValue=${firstValue%/*}/$secondValue/31
+        # secondValue is blank altogether ...
+        else
+            secondValue=$firstValue/31
+        fi
+    else
+        echo "Error in date range." > /dev/stderr
+    fi
+
+    # Turn /'s into -'s for SQL compatibility
+    firstValue=${firstValue//\//-}
+    secondValue=${secondValue//\//-}
+
+    setReturnValues $firstValue $secondValue
+}
+
+#####################################################################################################
+# regexListToSQL (list, columnName)
+#
+# Generates SQL for REGEX_LISTs
+#####################################################################################################
+function regexListToSQL()
+{
+    declare -a valueArray
+    local value output=""
+    local currentName=$2
+    declare -i hasNull=$FALSE bufferedName=$TRUE
+
+    OLDIFS=$IFS; IFS="," valueArray=($1)
+
+    # Render each value in the list in regex form or in fixed-string form, as appropriate
+    for value in ${valueArray[@]}; do
+
+        # Regex values
+        if [[ $value =~ [%_] ]]; then
+            # Be careful not to duplicate the name at the outset
+            if [[ $bufferedName == $TRUE ]]; then
+                output+="LIKE '$value' OR "
+                bufferedName=$FALSE
+            else
+                output+=$currentName" LIKE '$value' OR "
+            fi
+
+        # NULLs
+        elif [[ $value == $NULL_INDICATOR ]]; then
+            hasNull=$TRUE
+
+        # Fixed-string values
+        else
+            # Be careful not to duplicate the name at the outset
+            if [[ $bufferedName == $TRUE ]]; then
+                output+=" = '$value' OR "
+                bufferedName=$FALSE
+            else
+                output+=$currentName" = '$value' OR "
+            fi
+        fi
+    done
+    IFS=$OLDIFS
+
+    if [[ $hasNull == $TRUE ]]; then
+        output+=$currentName" IS NULL "
+    fi
+    output=${output% OR }
+
+    setReturnValue "$output"
+}
+
+#####################################################################################################
+# valueListToSQL (list, columnName, doQuoteList)
+#
+# Generates SQL for lists of (flat) values
+#####################################################################################################
+function valueListToSQL()
+{
+    local values=$1 currentName=$2
+    local br2 output
+    declare -i hasNull=$FALSE doQuoteList=$3
+
+    # Turn embedded NULLs into a separate indicator
+    if [[ $values =~ (^|,)$NULL_INDICATOR(,|$) ]]; then
+        hasNull=$TRUE
+        br2=${BASH_REMATCH[2]}
+        # Keep one comma, delete the other
+        if [[ "${BASH_REMATCH[1]}" == , ]]; then br2=; fi
+        values="${values/${BASH_REMATCH[1]}$NULL_INDICATOR$br2/}"
+    fi
+
+    # To post-sort the result set, we record the values and the column name, always using the FIRST value list we encounter.
+    if [[ -z $columnToSortBy ]]; then
+        valuesToSortBy=$values
+        columnToSortBy=$currentName
+    fi
+
+    # Quote the list
+    if [[ $doQuoteList == $TRUE ]]; then
+        values="'"${values//,/\',\'}"'"
+    fi
+
+    # Construct the final piece of SQL
+    if [[ $hasNull == $TRUE ]]; then
+        output+="$currentName IN ($values) OR $currentName IS NULL"
+    else
+        output+="$currentName IN ($values)"
+    fi
+
+    setReturnValue "$output"
+}
+
 
 ########################################################################################################
 # processUnnamedNCVArgument
@@ -1179,7 +1383,7 @@ function processNamedNCVArgument()
 ########################################################################################################
 function processUnnamedNCVArgument()
 {
-    local singleCol
+    local singleCol predicate=$1 effectiveComparator=$2 comparatorPosition=$3
 
     # Turn regex values (singletons or lists) into "LIKE" particles
     isArgOfType "$value" alnumRegex

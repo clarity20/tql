@@ -9,6 +9,12 @@ TQL_SCHEMA_CACHE=$TQL_HOME/testTableData.dat
 loadTableDescription $TQL_SCHEMA_CACHE
 #echo "$g_masterColumnList"
 
+generateWhereClause "fo=-"
+exit 9
+generateWhereClause "fo=2"
+
+
+
 type=${tt[TYPE_NCV]}
 where="fo=cTI+mS"
 generateWhereClause "$where"
