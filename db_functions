@@ -240,10 +240,15 @@ function parseCompletely()
         fi
     fi
 
-    WHERE_CLAUSE="${WHERE_CLAUSE/# $g_mainConjunction/WHERE}"     ## need to do this for every custom script where the WHERE_PRECLAUSE is empty
-    if [[ (! $WHERE_CLAUSE =~ ^WHERE) && ($WHERE_CLAUSE =~ [[:alpha:]]) ]]; then
+    # Make the WHERE clause start with "WHERE"
+    if [[ -n $WHERE_PRECLAUSE ]]; then
         WHERE_CLAUSE="WHERE $WHERE_CLAUSE"
+    elif [[ -n $WHERE_CLAUSE ]]; then
+        WHERE_CLAUSE="${WHERE_CLAUSE/#$g_mainConjunction/WHERE}"
+    else
+        : # Allow an empty clause for an unconditional query
     fi
+
     if [[ "$WHERE_CLAUSE" =~ illegalDefault ]]; then
         if [[ "$WHERE_CLAUSE" =~ $ILLEGAL_DEFAULT_ALPHA ]]; then
             echo FAIL: Cannot infer a column name for pure alphabetic or regex arguments.
@@ -869,15 +874,16 @@ function generateWhereClause()
         getReturnValue rhs
 
         # Prepare to walk the lexed argument forward
-        local sql=" $g_mainConjunction ("   # this outermost '(' ensures the "main" conjunctions have least precedence
+        local sql="$g_mainConjunction ( "   # this outermost '(' ensures the "main" conjunctions have least precedence
 
         # Break up the argument into its n-c-v predicates. For each predicate, invoke the low-level SQL
         # generators and link the predicates together with the right boolean conjunctions
         while [[ -n $rhs ]]; do
-            local predicate predicateType ncvCounter totalTokenCount effectiveComparator comparatorPosition nestingLevel
+            local predicate predicateType ncvCounter totalTokenCount newSql
+            local givenComparator effectiveComparator comparatorPosition nestingLevel
 
             # Pull the next predicate, boolean, or parenthetical token from the parsed string
-
+ 
             # Front delimiters for predicates
             if [[ $rhs =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}([0-9]+) ]]; then
                 ncvCounter=${BASH_REMATCH[1]}
@@ -892,7 +898,8 @@ function generateWhereClause()
 
                 # "Clean up" the predicate. Open with "(" or "NOT (" as appropriate.
                 # Perform expansions and transformations.
-                normalizePredicate $predicateType "$predicate"; getReturnValues predicate effectiveComparator comparatorPosition
+                normalizePredicate $predicateType "$predicate"
+                getReturnValues predicate effectiveComparator comparatorPosition
 
                 # Build the SQL fragment for the current predicate. Choose a builder based on
                 # whether the predicate contains an explicit name.
@@ -902,10 +909,16 @@ function generateWhereClause()
                     processUnnamedNCVArgument "$predicate" $effectiveComparator $comparatorPosition
                 fi
 
-                sql+=')'   # Needed for complex NCVs like regex lists; superfluous for simple ones
+                getReturnValues newSql givenComparator
+                sql+=$newSql
+
+                # If the comparator was changed by normalizePredicate(), then a "(" needs to be closed
+                if [[ "$effectiveComparator" != "$givenComparator" ]]; then
+                    sql+=") "   # Close the "NOT ( " that was factored out
+                fi
                 continue
 
-            # Left grouping parentheses. Since we are at predicate level, there will be no token counter.
+            # Left grouping parentheses. Regex note: Since we are at predicate level, there will be no token counter.
             elif [[ $rhs =~ ^$tokenDelimiter${tt[BEGIN_GROUP]}([0-9]+) ]]; then
                 sql+="("
                 nestingLevel=${BASH_REMATCH[1]}
@@ -977,13 +990,10 @@ function getEffectiveComparator()
     fi
 
     # If the comparator is negative ('<>' or '!=') then factor out a NOT and invert the comparator
-    #TODO Mark this "(" for easy deletion in case it turns out to be superfluous
     isNegativeComparator "$comparator"
     if (($?)); then
-        sql+=" NOT ("  # The '(' is needed for e.g. regex lists; is superfluous for simple NCVs
+        sql+="NOT ( "  # The '(' is needed when complex internal operands unravel into chains of ORs
         comparator='='
-    else
-        sql+=" ("
     fi
 
     setReturnValues "$comparator" "$comparatorPosition"
@@ -993,7 +1003,7 @@ function getEffectiveComparator()
 # normalizePredicate (predicateType, predicate)
 # Processes the marked up token stream for a single name-comparator-value predicate
 # into a format where the corresponding SQL can be generated with a fairly simple left-to-right scan
-# Note: The call to getEffectiveComparator() generates the SQL prefix of either "(" or "NOT (" as appropriate.
+# Note: The call to getEffectiveComparator() generates the SQL prefix of "NOT (" if appropriate.
 ########################################################################################################
 function normalizePredicate()
 {
@@ -1023,10 +1033,10 @@ function normalizePredicate()
 function processNamedNCVArgument()
 {
     local predicate=$1 effectiveComparator=$2 comparatorPosition=$3 
-    local currentToken tokenType tokenValue td=$tokenDelimiter
+    local currentToken tokenType tokenValue givenComparator
     local currentSide=$LEFT_SIDE currentName
     local firstValue secondValue
-    local filler'=???????????????'
+    local filler'=???????????????' td=$tokenDelimiter sql=""
 
     # Loop over the tokens, generating the right SQL for each. Special token types need to be "unraveled"
     # beforehand, so we process all tokens case-by-case depending on their type.
@@ -1053,6 +1063,8 @@ function processNamedNCVArgument()
                 ;;
             ${tt[COMPARATOR]})
                 # Use the positive comparator, which might not be the original
+                [[ "$currentToken" =~ [0-9]+(.*) ]]
+                givenComparator=${BASH_REMATCH[1]}
                 tokenValue=$effectiveComparator
                 ;;
             [$g_expandedTypes])
@@ -1190,6 +1202,7 @@ function processNamedNCVArgument()
         esac
     done
 
+    setReturnValues "$sql" "$givenComparator"
 }
 
 #####################################################################################################

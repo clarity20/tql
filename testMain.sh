@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+setIn() { in="$1"; echo in: "$in"; }
+
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 source $TQL_HOME/parse_functions
@@ -9,9 +11,11 @@ TQL_SCHEMA_CACHE=$TQL_HOME/testTableData.dat
 loadTableDescription $TQL_SCHEMA_CACHE
 #echo "$g_masterColumnList"
 
-generateWhereClause "fo=-"
+#setIn "ft=2"; generateWhereClause "$in"    # WHERE (foot = 2)
+setIn "ft<>2"; generateWhereClause "$in"; getReturnValue whereClause  # AND ( NOT ( foot = 2 ) )
+useIntuitiveNulls "$whereClause"   # AND ( NOT ( foot = 2 ) OR foot IS NULL )
 exit 9
-generateWhereClause "fo=2"
+generateWhereClause "ft=-"
 
 
 
