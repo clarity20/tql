@@ -266,7 +266,7 @@ function parseCompletely()
     : ${LIMIT_CLAUSE:=$placeholderForEmpty}
 
     # If the WHERE clause is effectively empty, provide a warning before returning an unrestricted result set
-    if [[ ( $WHERE_CLAUSE == $placeholderForEmpty ) && ( ! $LIMIT_CLAUSE =~ [1-9] ) && ( ! $ACTION_CLAUSE =~ "count(*)" ) && ( $g_warnOnSelectAll == 1 ) ]]; then
+    if [[ ( -z "$WHERE_CLAUSE" ) && ( ! $LIMIT_CLAUSE =~ [1-9] ) && ( ! $ACTION_CLAUSE =~ "count(*)" ) && ( $g_warnOnSelectAll == $TRUE ) ]]; then
         echo WARNING: Query is unrestricted, every record will be returned! > /dev/stderr
         read -n1 -p "Continue (y/n)? " doContinue > /dev/stderr
         echo > /dev/stderr
@@ -405,27 +405,23 @@ function useIntuitiveNulls()
     while [[ $rhs =~ ^NOT\  ]]; do
 
         # The first goal is to correctly and exactly identify the next NOT subclause.
-        # We are working with three forms of NOT subclauses; observe they might or might not make provisions for "NULL".
-        #     (1) NOT (x = value    [OR ... OR    y = value] [ OR x IS NULL])
-        #     (2) NOT (x LIKE 'rgx' [OR ... OR y LIKE 'rgx'] [ OR x IS NULL])
-        #     (3) NOT (x IN (list)  [OR ... OR  y IN (list)] [ OR x IS NULL])
+        # We are working with three forms of NOT subclause,
+        #     (1) NOT (x1 = value    [OR ... OR    xn = value] [ OR x1...xn IS NULL])
+        #     (2) NOT (x1 LIKE 'rgx' [OR ... OR xn LIKE 'rgx'] [ OR x1...xn IS NULL])
+        #     (3) NOT (x1 IN (list)  [OR ... OR  xn IN (list)] [ OR x1...xn IS NULL])
+        # since we only introduce NOT when negating the comparator. The checks for NULL
+        # will appear iff the user explicitly included NULLs in his input argument.
 
         # Find the ")" character that closes the NOT clause.
-        # For cases (1),(2) we can just chop at the first ")" since they will never have internal parentheses
-        local notClause=${rhs%%)*}")"
-
-        # For case (3), the preceding is not correct because of the internal parentheses
+        # Advance to the first ')'
+        [[ $rhs =~ ^([^\)]+\))(.*) ]]
+        local notClause=${BASH_REMATCH[1]}
+        # If there is a second '(' before that...
         if [[ $notClause =~ \(.*\( ]]; then
-            # Extend the NOT clause to the terminating "))" or "NULL)", whichever is nearer. Choose by chopping the string both ways and measuring.
-            # Note: If the applicable terminating sequence is all the way at the end, then the chopped pieces will have equal length. Careful!
-            local toNextParens=${rhs%%\)\)*}
-            local toNextNULL=${rhs%%NULL\)*}
-            ((lengthDiff=${#toNextNULL}-${#toNextParens}))
-            if [[ ( $lengthDiff -gt 0 ) || ( $lengthDiff -eq 0 && $toNextParens =~ \)\) ) ]]; then
-                notClause=$toNextParens"))"
-            else
-                notClause=$toNextNULL"NULL)"
-            fi
+            # ... then find the first two ')'s without an intervening '('
+            [[ $rhs =~ \)[^\(]*\)(.*) ]]
+            # The NOT clause consists of everything up to and including this
+            notClause=${rhs%%${BASH_REMATCH[1]}}
         fi
 
         # Skip this NOT clause if it already takes "nullness" into account
@@ -435,16 +431,17 @@ function useIntuitiveNulls()
 
         # Update the NOT clause by allowing NULLs as appropriate.
         else
-            # Every column listed in the NOT-clause should explicitly allow NULLs, since we're simulating "intuitive" NULLs
-            # and we're currently inside a "NOT". Also, observe that the NOT-clause will contain just one column
-            # unless it was constructed by iterating over default{Num,Alnum}Cols. So to get the full column list,
-            # we check whether the last column name differs from the first, and if so
-            # we'll iterate over default{Num,Alnum}Cols; otherwise we just take the first column name we see.
+            # If there are no NULLs, the user did not explicitly give them. In keeping with
+            # two-valued logic, since we have negated the clause we need to make explicit
+            # allowance for NULL values. So we will render the 2-valued-logical
+            #    NOT ( a OR b OR ... )
+            # as the following in SQL:
+            #    NOT ( a OR b OR ... ) OR a IS NULL OR b IS NULL OR ...
 
             local originalNotClause=$notClause
 
             # Parse out the first column name
-            [[ $notClause =~ \(([^ ]*)\ (LIKE|IN|=)(.*) ]]
+            [[ $notClause =~ \(\ ([^ ]*) ]]
             firstColumnName="${BASH_REMATCH[1]}"
 
             # Is the NOT clause a compound clause?
@@ -464,18 +461,15 @@ function useIntuitiveNulls()
                 fi
 
                 # Make the key addition(s) to the NOT-subclause
-                notClause="("$notClause
                 OLDFS="$IFS"; IFS=$','
                 for columnName in $columnList; do
                     $notClause+=" OR ${columnName%%:*} IS NULL"       # chop off any special indicators appended to the columnName
                 done
-                notClause+=")"
                 IFS="$OLDFS"
 
             # Otherwise the NOT subclause is a simple clause and we have only one column name
             else
-                notClause="("$notClause
-                notClause+=" OR "$firstColumnName" IS NULL)"
+                notClause+=" OR "$firstColumnName" IS NULL"
             fi
 
             # Update lhs/rhs for the next iteration: substitute in the modified NOT subclause
@@ -832,7 +826,7 @@ function parseOutSelects()
 function generateWhereClause()
 {
     # Declare return data
-    local WHERE_CLAUSE=$placeholderForEmpty
+    local WHERE_CLAUSE=""
     local valuesToSortBy columnToSortBy
 
     # Declare helper variables
@@ -952,7 +946,7 @@ function generateWhereClause()
         done
 
         # Finalize the subclause for this argument
-        whereComponent[numWheres++]=$sql")"
+        whereComponent[numWheres++]=$sql") "
 
         # Get ready to process the next argument
         shift
