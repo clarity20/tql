@@ -821,7 +821,7 @@ function generateWhereClause()
     local valuesToSortBy columnToSortBy
 
     # Declare helper variables
-    declare -i numWheres=0 numDftNumCols=0 numDftAlnumCols=0
+    declare -i numWheres=0 numDftNumCols=0 numDftAlnumCols=0 totalArguments=$#
     declare -a whereComponent
     local name code comparator value
     local valueType rhs
@@ -858,8 +858,13 @@ function generateWhereClause()
         parseQueryClause "$1" $TRUE
         getReturnValue rhs
 
-        # Prepare to walk the lexed argument forward
-        local sql="$g_mainConjunction ( "   # this outermost '(' ensures the "main" conjunctions have least precedence
+        # Begin the SQL subclause for the current argument
+        local sql="$g_mainConjunction "
+        # If this subclause is one of several, enclose it in '(...)' 
+        # to ensure the "main" conjunction has least precedence 
+        if ((totalArguments > 1)); then
+            sql+="( "
+        fi
 
         # Break up the argument into its n-c-v predicates. For each predicate, invoke the low-level SQL
         # generators and link the predicates together with the right boolean conjunctions
@@ -867,9 +872,9 @@ function generateWhereClause()
             local predicate predicateType ncvCounter totalTokenCount newSql
             local givenComparator effectiveComparator comparatorPosition nestingLevel
 
-            # Pull the next predicate, boolean, or parenthetical token from the parsed string
+            # Pull the next predicate, boolean, or parenthesis token from the parsed string
  
-            # Front delimiters for predicates
+            # Identify front-delimiters for predicates
             if [[ $rhs =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}([0-9]+) ]]; then
                 ncvCounter=${BASH_REMATCH[1]}
                 advanceStream "$rhs" ${BASH_REMATCH[0]}; getReturnValue rhs
@@ -937,7 +942,10 @@ function generateWhereClause()
         done
 
         # Finalize the subclause for this argument
-        whereComponent[numWheres++]=$sql") "
+        if ((totalArguments > 1)); then
+            sql+=") "
+        fi
+        whereComponent[numWheres++]=$sql
 
         # Get ready to process the next argument
         shift
