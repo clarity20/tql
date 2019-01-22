@@ -66,8 +66,33 @@ declare -r g_expandableTypes=${tt[EXPANDABLE_WORD]}${tt[EXPANDABLE_SEQUENCE]}${t
 declare -r g_expandedTypes=${tt[EXPANDED_WORD]}${tt[EXPANDED_SEQUENCE]}${tt[EXPANDED_FUNCTION]}
 declare -r g_ncvTypeMarkers=${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}
 
-# Error/status codes
-declare -ri ERR_INVALID_TYPE=${tt[INVALID_TYPE]}   # Converts ${tt[INVALID_TYPE]} to a number
+########################################################################
+# Error/exception handling: Return codes and global error message buffer
+# NB: Since the shell limits return codes to [0,255] we might need
+# to define additional arrays of return codes. Just be careful about
+# the duplicate meanings that certain numeric code values would have.
+########################################################################
+declare -A rc
+declare -i g_returnCode
+g_statusMsg=""
+rc=(
+    [SUCCESS]=0
+    [INVALID_TYPE]=1
+    [INFEASIBLE_EXPR]=2
+)
+
+function setError()
+{
+    g_returnCode=$1
+    if [[ -n $2 ]]; then g_statusMsg=$2; fi
+    return $g_returnCode
+}
+
+function doExit()
+{
+    echo $g_statusMsg > /dev/stderr
+    exit $g_returnCode
+}
 
 ########################################################################
 # Simulate modifiable function arguments as in pass-by-pointer/reference.

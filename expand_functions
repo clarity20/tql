@@ -154,6 +154,9 @@ function applyTransformations()
 #   2. Uses type-based rules of grammar and syntax to eliminate infeasible candidates
 #   3. Solicits user input when two or more candidates are feasible choices, and
 #      reruns step 2 if necessary
+# Return codes:
+#   SUCCESS: successful expansion
+#   INFEASIBLE_EXPR: failed to find grammatically-feasible expansions for the expression
 #
 # This function also determines the "transformability" of the expression, resolving to
 # a final assessment at the end of step 3. This is not part of smart expansion per se,
@@ -264,11 +267,11 @@ function smartExpandExpression()
                 # EXECUTE THE ALGORITHM ON THIS ITERATE:
                 # Use the lexical structure of the expression to determine whether the combination
                 # of choices which the current iterate represents is grammatically permissible
-                evaluateTree "$expression"
 
-                # Record whether the tree evaluated successfully, i.e. the combination is permitted
-                if [[ $? != $ERR_INVALID_TYPE ]]; then
-                    # Set the feasibility markers for this node, coordinate by coordinate
+                # If the tree evaluated successfully, i.e. the combination is permitted ...
+                if evaluateTree "$expression"; then
+
+                    # ... then set the feasibility markers for this node, coordinate by coordinate
                     for ((i=startingIndex; i<expansionCount; i++)); do
 
                         # The markers are seated at the positions of the coordinates in the flattened list
@@ -331,6 +334,11 @@ function smartExpandExpression()
                 fi
             done
 
+            if ((k==0)); then
+                setError ${rc[INFEASIBLE_EXPR]} "Illegal grammar / no feasible interpretation for '$expression'."
+                return $?
+            fi
+
             # Remove the records being deleted
             for ((; k<listLengths[i]; k++)); do
                 unset tempList[k]
@@ -375,6 +383,7 @@ function smartExpandExpression()
     unset tempList
 
     setReturnValues "$expression" "$chosenTransformSignature"
+    return ${rc[SUCCESS]}
 }
 
 ####################################################################################
@@ -396,7 +405,6 @@ function smartExpandExpression()
 function evaluateTree()
 {
     local expression=$1 currentLevel=${2:-0}
-    declare -i retVal
     local leftType rightType resultantType transformation
     local operatorToken="${tokenDelimiter}([0-9]+)([${tt[COMPARATOR]}${tt[OPERATOR]}])$currentLevel([^${tokenDelimiter}]+)"
     local spaceToken=${tokenDelimiter}${tt[SPACE]}
@@ -447,7 +455,8 @@ function evaluateTree()
 
         # If the expression is known to be invalid, jump up and out
         if [[ $leftType == ${tt[INVALID_TYPE]} ]]; then
-            return $leftType
+            setError ${rc[INVALID_TYPE]}
+            return $?
         fi
 
         # Repeat the above for the right side
@@ -458,16 +467,13 @@ function evaluateTree()
             evaluateTree "$rightSide" $currentLevel; getReturnValue rightType
         fi
         if [[ $rightType == ${tt[INVALID_TYPE]} ]]; then
-            return $rightType
+            setError ${rc[INVALID_TYPE]}
+            return $?
         fi
 
         # Determine the aggregate/resultant type and identify transformations
-        lookupResultantTypeAndTrans $leftType $operator $operatorType $rightType
+        lookupResultantTypeAndTrans $leftType $operator $operatorType $rightType || return $?
         getReturnValues resultantType transformation
-        # Return instantly if the type is invalid
-        if [[ $resultantType == ${tt[INVALID_TYPE]} ]]; then
-            return $resultantType
-        fi
 
         # If there are transformations, append bounding information
         declare -i leftmostTokenId rightmostTokenId
@@ -482,7 +488,7 @@ function evaluateTree()
             transformSignature[transformCount++]=$transformation
         fi
         setReturnValue "$resultantType"
-        return 0
+        return ${rc[SUCCESS]}
 
     else # No operator was found at the current level. This means we are left with either
         # a function call, a solitary token of expandable type, or a primitive constant.
@@ -513,7 +519,7 @@ function evaluateTree()
                         sqlType=${BASH_REMATCH[1]}
                         sqlTypeToInternalType "$sqlType"; getReturnValue typeSignature[i]
                         setReturnValue "${typeSignature[i]}"
-                        return 0
+                        return ${rc[SUCCESS]}
                     fi
                 done
                 ;;
@@ -523,12 +529,12 @@ function evaluateTree()
             *)
                 # Default behavior: A single, normal token or already-expanded token
                 setReturnValue "$tokenType"
-                return 0
+                return ${rc[SUCCESS]}
                 ;;
         esac
     fi
 
-    return $ERR_INVALID_TYPE
+    setError ${rc[INVALID_TYPE]} "Invalid type for expression '$expression'"; return $?
 }
 
 ####################################################################################
@@ -568,6 +574,7 @@ function sqlTypeToInternalType()
     fi
 
     setReturnValue "$internalType"
+    return ${rc[SUCCESS]}
 }
 
 ####################################################################################
@@ -576,7 +583,7 @@ function sqlTypeToInternalType()
 # Determines the resultant type of a binary operation applied to two objects
 # of the specified types, and a type id of the applicable transformation, if any.
 #
-# Returns an error code if the operation is not valid
+# Return codes: SUCCESS or INVALID_TYPE
 ####################################################################################
 function lookupResultantTypeAndTrans()
 {
@@ -617,11 +624,15 @@ function lookupResultantTypeAndTrans()
             operatorSchematic=$type1$regex_anyOperator$type2
             resultantType=${g_opTypeResolutions[$operatorSchematic]}
         fi
-        # An empty / nonexistent result indicates an illegal operation
-        : ${resultantType:=${tt[INVALID_TYPE]}}
+    fi
+
+    # An empty / nonexistent result indicates an illegal operation
+    if [[ $resultantType == ${tt[INVALID_TYPE]} ]]; then
+        setError ${rc[INVALID_TYPE]} "Illegal operation: '$expression'"; return $?
     fi
 
     setReturnValues "$resultantType" "$transformation"
+    return ${rc[SUCCESS]}
 }
 
 ####################################################################################
@@ -729,7 +740,7 @@ function expandAbbreviatedName()
     local customAbbreviations="$localCustomAbbreviations"$'\n'$globalCustomAbbreviations
     local matchingName
     local finalName finalType    # The return values. finalType is also used as an error indicator for bad input
-    declare -i numCandidates=0 retVal=0
+    declare -i numCandidates=0
 
     declare -a _expand_matchList
     local      _expand_nameRegex

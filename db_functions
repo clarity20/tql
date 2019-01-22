@@ -218,16 +218,7 @@ function parseCompletely()
     fi
 
     # Build the core WHERE-clause by lexing, parsing and expanding the arguments and translating to SQL.
-    generateWhereClause "$@"
-    retVal=$?
-    case $retVal in
-      2) echo Parsing error: Unrecognized argument.
-         return $((retVal+10)) ;;
-      1) echo Incorrect calling syntax.
-         return $((retVal+10)) ;;
-      *) # Parsing was successful.
-         ;;
-    esac
+    generateWhereClause "$@" || return $?
     getReturnValues WHERE_CLAUSE sortInstructions
 
     # Massage the query contents based on the user options
@@ -530,7 +521,7 @@ function parseOutOptions()
     local optionsRegex="(^| )(-|[*]( |$))"
     local arg nextArg
 
-    # Quick exit if there are no options
+    # Quick return if there are no options
     if [[ ! "$@" =~ $optionsRegex ]]; then return 0; fi
 
     for ((idx=1; idx<=$#; idx++)); do
@@ -718,7 +709,7 @@ function parseOutSelects()
     local groupNameRegex="^\+"              # begins with literal "+".
     local selectionsRegex="(^| )\+"
 
-    # Quickly exit if there are no selection-type args
+    # Quickly return if there are no selection-type args
     if [[ ! "$@" =~ $selectionsRegex ]]; then return 0; fi
 
     for ((idx=1; idx<=$#; idx++)); do
@@ -892,7 +883,7 @@ function generateWhereClause()
 
                 # "Clean up" the predicate. Open with "(" or "NOT (" as appropriate.
                 # Perform expansions and transformations.
-                normalizePredicate $predicateType "$predicate"
+                normalizePredicate $predicateType "$predicate" || return $?
                 getReturnValues predicate effectiveComparator comparatorPosition
 
                 # Build the SQL fragment for the current predicate. Choose a builder based on
@@ -960,7 +951,7 @@ function generateWhereClause()
     # Pass back all necessary information to the caller
     setReturnValues "$WHERE_CLAUSE" "$columnToSortBy" "$valuesToSortBy"
 
-    return 0
+    return ${rc[SUCCESS]}
 }
 
 
@@ -1009,7 +1000,7 @@ function normalizePredicate()
 
     # "Expand" and "transform" the predicate to its final state from which SQL can be constructed
     # readily with a single left-to-right pass over the data stream
-    smartExpandExpression "$predicate"; getReturnValues predicate transformations
+    smartExpandExpression "$predicate" && getReturnValues predicate transformations || return $?
     applyTransformations "$predicate" "$transformations"; getReturnValue predicate
 
     # To further simplify constructing the SQL, we will recast negative comparators as positive
@@ -1850,16 +1841,16 @@ function foldResultSet()
 ############################################################################
 validate_single_column()
 {
-    if [ $# -lt 1 ]; then
-        echo USAGE:  ${FUNCNAME[0]}  columnNameRegex
+    if [[ $# -lt 1 ]]; then
+        echo USAGE:  $FUNCNAME  columnNameRegex
         exit 12
     fi
 }
 
 validate_id_or_name_regex()
 {
-    if [ $# -lt 1 ]; then
-        echo USAGE:  ${FUNCNAME[0]}  id_or_nameRegex
+    if [[ $# -lt 1 ]]; then
+        echo USAGE:  $FUNCNAME  id_or_nameRegex
         exit 34
     fi
 }

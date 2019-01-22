@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-setIn() { in="$1"; echo in: "$in"; }
+setInput() { in="$1"; echo in: "$in"; }
 
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
@@ -11,12 +11,13 @@ TQL_SCHEMA_CACHE=$TQL_HOME/testTableData.dat
 loadTableDescription $TQL_SCHEMA_CACHE
 #echo "$g_masterColumnList"
 
-#setIn "ft=2"; generateWhereClause "$in"    # WHERE (foot = 2)
-setIn "ft<>2"; generateWhereClause "$in"; getReturnValue whereClause  # AND ( NOT ( foot = 2 ) )
-useIntuitiveNulls "$whereClause"   # AND ( NOT ( foot = 2 ) OR foot IS NULL )
-exit 9
-generateWhereClause "ft=-"
+generateWhereClause "ft=-" # AND (foot IS NULL)
+echo return code is $?
+doExit
 
+#setInput "ft=2"; generateWhereClause "$in"    # WHERE (foot = 2)
+setInput "ft<>2"; generateWhereClause "$in" && getReturnValue whereClause  # AND ( NOT ( foot = 2 ) )
+useIntuitiveNulls "$whereClause"   # AND ( NOT ( foot = 2 ) OR foot IS NULL )
 
 
 type=${tt[TYPE_NCV]}
