@@ -44,15 +44,16 @@ g_operatorStrength=(
 
 # Enumerate the ways in which the resultant data types of complex expressions
 # can be deduced from their operators and the types of their operands.
-# We partition this information in two data structures according to whether
-# or not the operator is a comparator.
+# We partition this information in several ways according to whether
+# or not the operator is a comparator, and for comparators, the type of the RHS operand
 
 # For comparator expressions we list the permissible forms in a simple array.
 # Each entry specifies a permissible form or set of forms: a first type,
 # the operator(s) and a second type.
 # We use regular expressions to shorten the overall list, and in the code
 # we blanket-permit every form in which both types are the same.
-declare -a g_compTypeResolutions
+# Finally, for native-type RHS we list only the LHS types as this is enough information.
+declare -a g_compTypeResolutions g_nativeTypeResolutions
 declare -r regex_equalOrNot="^(\!?=|<=?>)$"      # will match any of  !=  =  <>  <=>
 g_compTypeResolutions=(
 "${tt[INTEGER]}${regex_equalOrNot}${tt[INT_LIST]}"
@@ -62,6 +63,16 @@ g_compTypeResolutions=(
 "${tt[FLOAT]}${regex_equalOrNot}${tt[FLOAT_LIST]}"
 "${tt[STRING_CONSTANT]}${regex_equalOrNot}${tt[REGEX_LIST]}"
 "${tt[DATE]}${regex_equalOrNot}${tt[DATE_RANGE]}"
+)
+g_nativeTypeResolutions=(
+${tt[INTEGER]}
+${tt[STRING_CONSTANT]}
+${tt[DECIMAL]}
+${tt[DATE]}
+${tt[TIME]}
+${tt[TIMESTAMP]}
+${tt[BLOB]}
+${tt[SET]}
 )
 
 # For non-comparator expressions we use a key-value scheme. The keys consist of
@@ -590,6 +601,7 @@ function lookupResultantTypeAndTrans()
     declare -r type1=$1 operator=$2 operatorType=$3 type2=$4
     local resultantType=${tt[INVALID_TYPE]}
     local operatorSchematic transformation
+    declare -i i
 
     if [[ $operatorType == ${tt[COMPARATOR]} ]]; then
         transformation=""
@@ -600,12 +612,25 @@ function lookupResultantTypeAndTrans()
             resultantType=${tt[INTEGER]}
 
         # Other expressions involving comparators need to be looked up in
-        # the enumerative list.
+        # the enumerative list appropriate to the types involved. We divide the lists
+        # like this to reduce the total runtime complexity.
+
+        # For general-native types we use a specially-structured list. The idea: the types
+        # in the list are the permissible LHS types when a general-native appears on the RHS
+        elif [[ $type2 == ${tt[NATIVE_TYPE]} && $operator =~ ^${regex_equalOrNot}$ ]]; then
+            operatorSchematic=$type1
+            # Look for the above schematic among the array elements.
+            for ((i=0; i < ${#g_nativeTypeResolutions[@]}; i++)); do
+                if [[ "$operatorSchematic" =~ ^${g_nativeTypeResolutions[$i]}$ ]]; then
+                    resultantType=${tt[INTEGER]}
+                    break
+                fi
+            done
+
+        # For all other types we use a more comprehensive, general-purpose list
         else
             operatorSchematic=$type1$operator$type2
-            declare -i i;     #TODO Move to tql_globals. Add a "j" too.
             # Look for the above schematic among the array elements.
-            # The array is small, so linear search is fast enough.
             for ((i=0; i < ${#g_compTypeResolutions[@]}; i++)); do
                 if [[ "$operatorSchematic" =~ ^${g_compTypeResolutions[$i]}$ ]]; then
                     resultantType=${tt[INTEGER]}

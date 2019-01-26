@@ -1044,9 +1044,6 @@ function processNamedNCVArgument()
 
         # Extract the token value(s) and type. Special tokens must first be unraveled to their underlying data.
         case $tokenType in
-            ${tt[NULL_TYPE]})
-                tokenValue="$NULL_INDICATOR"
-                ;;
             ${tt[SPACE]})
                 tokenValue=" "
                 ;;
@@ -1104,9 +1101,13 @@ function processNamedNCVArgument()
 
         # Generate the correct SQL for the token data and type
         case $tokenType in
-            ${tt[NULL_TYPE]})
-                # Isolated (non-list) nulls
-                sql+="IS NULL "
+            ${tt[NATIVE_TYPE]})
+                if [[ $tokenValue == $NULL_INDICATOR ]]; then
+                    # Isolated (non-list) nulls
+                    sql+="IS NULL "
+                else
+                    sql+=$PREPARED_STMT_PARM" "
+                fi
                 pendingEqualsSign=$FALSE
                 ;;
             ${tt[SPACE]})

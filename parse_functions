@@ -183,7 +183,11 @@ function parseQueryClause()
             streamToken ${tt[BOOLEAN]}"$letter"; appendReturnValue outputStream
             continue
 
-        # TODO Mark isolated (non-list) NULLs. Distinguish them from minus-sign operators...
+        # Mark prepared-statement parameters
+        elif [[ "$letter" == \? ]]; then
+            advanceStream "$inputStream"; getReturnValue inputStream
+            streamToken ${tt[NATIVE_TYPE]}"$letter"; appendReturnValue outputStream
+            continue
 
         # Mark commas as argument delimiters if we are inside a function call or we are not in WHERE-clause mode.
         # In other situations commas are list-item delimiters and should not be marked at all.
@@ -282,8 +286,8 @@ function parseQueryClause()
             letter=${inputStream:0:1}
         # (1a) Stream solitary NULL values as separate tokens
         elif [[ $inputStream =~ ^-([^[:alnum:].]|$) ]]; then
-            streamToken ${tt[NULL_TYPE]}; appendReturnValue outputStream
-            advanceStream "$inputStream" 1; getReturnValue inputStream
+            streamToken ${tt[NATIVE_TYPE]}$NULL_INDICATOR; appendReturnValue outputStream
+            advanceStream "$inputStream"; getReturnValue inputStream
             continue
         else
             rawToken=""

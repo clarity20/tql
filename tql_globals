@@ -6,6 +6,7 @@ declare -r LEFT_SIDE=0
 declare -r RIGHT_SIDE=1
 
 declare -r NULL_INDICATOR="-"
+declare -r PREPARED_STMT_PARM="?"
 
 declare -r strongQuote="'"
 declare -r weakQuote='"'
@@ -57,9 +58,9 @@ tt=(
 
     [DELIMITER]=','
 
-    [NULL_TYPE]=$NULL_INDICATOR
-    [ANY_TYPE]='?'          # generic value placeholder
-    [INVALID_TYPE]=1        # This doubles as an error code so it must be a number
+    [NATIVE_TYPE]='-'  # A token that can take on any native SQL type, depending on context
+                       # Examples of this are NULL and '?'
+    [INVALID_TYPE]=1   # This doubles as an error code so it must be a number
 )
 
 declare -r g_expandableTypes=${tt[EXPANDABLE_WORD]}${tt[EXPANDABLE_SEQUENCE]}${tt[FUNCTION]}
