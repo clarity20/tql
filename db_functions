@@ -488,7 +488,7 @@ function isOptionOn()
 {
     local regex=":($1):"
 
-    if [[ "${2,,}" =~ ${regex,,} ]]; then   # Lowercase-ify the arg and the regex to get case-agnosticism
+    if [[ "$2" =~ ${regex,,} ]]; then   # Lowercase-ify the regex to get case-agnosticism
         if [[ "$3" == -show ]]; then
             setReturnValue "${BASH_REMATCH[1]}"
         fi
@@ -503,6 +503,23 @@ function isOptionOff()
     isOptionOn "$@"
     return $(( ! $? ))
 }
+
+function setOption()
+{
+    if [[ ! "$OPTIONS" =~ :${1,,}: ]]; then
+        OPTIONS+=${1,,}":"
+    fi
+
+    return ${rc[SUCCESS]}
+}
+
+function clearOption()
+{
+    if [[ "$OPTIONS" =~ :${1,,}: ]]; then
+        OPTIONS=${OPTIONS/:${1,,}/}
+    fi
+}
+
 
 ##########################################################################################
 # parseOutOptions  command_line...
@@ -558,6 +575,7 @@ function parseOutOptions()
     done
 
     retArgs="${retArgs% }"
+    OPTION_LIST+=":"
 
     # Make the options case-agnostic by always storing them in lowercase
     setReturnValues "${OPTION_LIST,,}" $retArgs
@@ -1106,7 +1124,8 @@ function processNamedNCVArgument()
                     # Isolated (non-list) nulls
                     sql+="IS NULL "
                 else
-                    sql+=$PREPARED_STMT_PARM" "
+                    sql+="= $PREPARED_STMT_PARM "
+                    setOption "query"    # disable auto-execute in the case of prepared statements
                 fi
                 pendingEqualsSign=$FALSE
                 ;;

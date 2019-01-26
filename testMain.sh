@@ -11,9 +11,10 @@ TQL_SCHEMA_CACHE=$TQL_HOME/testTableData.dat
 loadTableDescription $TQL_SCHEMA_CACHE
 #echo "$g_masterColumnList"
 
-setInput "ft=-"; generateWhereClause "$in" # AND (foot IS NULL)
-getReturnValue whereClause
-echo return code is $?, where clause is $whereClause
+setInput "ft=-"; generateWhereClause "$in"; getReturnValue whereClause # AND foot IS NULL
+echo return code $?, where clause is $whereClause
+setInput "ft=?"; generateWhereClause "$in"; getReturnValue whereClause # AND foot = ?
+echo return code $?, where clause is $whereClause
 doExit
 
 #setInput "ft=2"; generateWhereClause "$in"    # WHERE (foot = 2)
