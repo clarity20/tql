@@ -3,7 +3,7 @@
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 
-THIS_SCRIPT=${0##*/}
+SCRIPT_NAME=${0##*/}
 validate_single_column "$@"
 
 STANDARD_COLS="table_name"    # others: auto_increment, ...
@@ -11,7 +11,7 @@ TABLES=information_schema.tables
 
 g_defaultAlnums=table_name
 
-# Invoke the big parsing routine
+# Invoke the main parsing routine
 parseCompletely  "$STANDARD_COLS"  "$TABLES"  "table_name"  "$WHERE_PRECLAUSE"  "$@"
 retVal=$?
 if ((retVal >= 10)); then

@@ -3,10 +3,10 @@
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 
-THIS_SCRIPT=${0##*/}
+SCRIPT_NAME=${0##*/}
 
 if [[ $# -lt 1 ]]; then
-    echo USAGE: $THIS_SCRIPT [-numRows] tableName
+    echo USAGE: $SCRIPT_NAME [-numRows] tableName
     echo Default: 10 rows
     exit 1
 fi
