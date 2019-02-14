@@ -195,7 +195,7 @@ function smartExpandExpression()
             # Column name abbreviation
             columnTokenIDs[columnCount]=$tokenNumber
             inputColumnNames[columnCount]=$currentAbbr
-            getExpandedColumnNames "$TABLE_NAMES" $currentAbbr; getReturnValue columnLists[columnCount]
+            getExpandedColumnNames "$MAIN_TABLE" $currentAbbr; getReturnValue columnLists[columnCount]
             ((columnCount++))
         elif [[ $expansionType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
             # Abbreviated word sequence
@@ -208,7 +208,7 @@ function smartExpandExpression()
             functionTokenIDs[functionCount]=$tokenNumber
             inputFunctionNames[functionCount]=$currentAbbr
 #MMMM Needs finishing:
-            getExpandedFunctionNames "$TABLE_NAMES" $currentAbbr; getReturnValue functionLists[functionCount]
+            getExpandedFunctionNames "$MAIN_TABLE" $currentAbbr; getReturnValue functionLists[functionCount]
             ((functionCount++))
         fi
     done
@@ -346,9 +346,8 @@ function smartExpandExpression()
             done
 
             if ((k==0)); then
-                local rawExpression
-                denudeTokens "$expression"; getReturnValue rawExpression
-                setError ${rc[INFEASIBLE_EXPR]} "Illegal grammar / no feasible interpretation for '$rawExpression'."
+                denudeTokens "$expression"; getReturnValue expression
+                setError ${rc[INFEASIBLE_EXPR]}
                 return $?
             fi
 
@@ -547,7 +546,7 @@ function evaluateTree()
         esac
     fi
 
-    setError ${rc[INVALID_TYPE]} "Invalid type for expression '$expression'"; return $?
+    setError ${rc[INVALID_TYPE]}; return $?
 }
 
 ####################################################################################
@@ -655,7 +654,7 @@ function lookupResultantTypeAndTrans()
 
     # An empty / nonexistent result indicates an illegal operation
     if [[ $resultantType == ${tt[INVALID_TYPE]} ]]; then
-        setError ${rc[INVALID_TYPE]} "Illegal operation: '$expression'"; return $?
+        setError ${rc[INVALID_TYPE]} "Illegal operation: '\$expression'"; return $?
     fi
 
     setReturnValues "$resultantType" "$transformation"
@@ -722,7 +721,7 @@ function getExpandedColumnNames()
     parserSetupCommand=setupColumnInfoParser
     matchFinderCommand=generateColumnNameMatches
     finalizeExpandedNameCommand=finalizeExpandedColumnName
-    customAbbreviations=$g_columnExpansionMacros
+    globalCustomAbbreviations=$g_columnExpansionMacros
 
     expandAbbreviatedName "$@"
     return $?
@@ -733,7 +732,7 @@ function getExpandedTableNames()
     parserSetupCommand=setupTableInfoParser
     matchFinderCommand=generateTableNameMatches
     finalizeExpandedNameCommand=finalizeExpandedTableName
-    customAbbreviations=$g_tableExpansionMacros
+    globalCustomAbbreviations=$g_tableExpansionMacros
 
     expandAbbreviatedName "" "$@"    # $1 is for column-name expansion only
     return $?
@@ -744,7 +743,7 @@ function getExpandedFunctionNames()
     parserSetupCommand=setupFunctionInfoParser
     matchFinderCommand=generateFunctionNameMatches
     finalizeExpandedNameCommand=finalizeExpandedFunctionName
-    customAbbreviations=$g_functionExpansionMacros
+    globalCustomAbbreviations=$g_functionExpansionMacros
 
     expandAbbreviatedName "" "$@"    # $1 is for column-name expansion only
     return $?
@@ -1011,10 +1010,12 @@ function promptForExpansion()
 #    $finalizeExpandedNameCommand "$matchingLine"
     unset finalizeExpandedNameCommand
 
-    [[ $matchingLine =~ $delim2(.*)$delim2 ]]
-    local internalType matchingType
-    matchingType=${BASH_REMATCH[1]}
-    sqlTypeToInternalType $matchingType; getReturnValue internalType
+    # Some types of matching require us to break out subfields of data
+    if [[ $matchingLine =~ $delim2(.*)$delim2 ]]; then
+        local internalType matchingType
+        matchingType=${BASH_REMATCH[1]}
+        sqlTypeToInternalType $matchingType; getReturnValue internalType
+    fi
 
     setReturnValues $matchingName "$internalType"
     return 0
@@ -1044,8 +1045,30 @@ finalizeExpandedColumnName()
 }
 
 ####################################################################################
+# readSchemaAndConfigure
+####################################################################################
+function readSchemaAndConfigure()
+{
+    local tableName=$1 tableList
+
+    # Expand to the full table name
+    loadListOfTables "$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.tables"
+    getExpandedTableNames $tableName; getReturnValue tableList
+    promptForExpansion $tableName "$tableList"; getReturnValue tableName
+
+    # Get the table's column list
+    loadTableDescription "$TQL_SCHEMA_CACHE/$TQL_DBNAME/$tableName"
+
+    # Load the configuration for the table
+    local configFile=$TQL_CONFIG_DIR/${TQL_DBNAME}.cfg
+    loadConfigForTable "$configFile" $tableName || return $?
+
+    return ${rc[SUCCESS]}
+}
+
+####################################################################################
 # loadTableDescription
-# Loads table information from a file (if it exists) or by querying the database
+# Loads a table's column information from a file (if it exists) or by querying the database
 ####################################################################################
 function loadTableDescription()
 {
@@ -1059,10 +1082,22 @@ function loadTableDescription()
 
     # Only query the DB if no cached file is available
     else
-        g_masterColumnList=$(Desc "$TABLE_NAMES" +column_default -dontExpand)      # subshell because we're calling a script, not a function
+        g_masterColumnList=$(Desc "$MAIN_TABLE" +column_default -dontExpand)      # subshell because we're calling a script, not a function
     fi
 }
 
+function loadListOfTables()
+{
+    local tableListFile=$1
+
+    if [[ -r $tableListFile ]]; then
+        mapfile -t < "$tableListFile"
+        OLDFS=$IFS; IFS=$'\n' g_masterTableList="${MAPFILE[*]}"
+        IFS=$OLDFS
+    else
+        g_masterTableList=$(FindTable "%")
+    fi
+}
 
 #####################################################################################################
 # generate{Table,Column}NameMatches <no args>
@@ -1072,7 +1107,7 @@ function generateTableNameMatches()
 {
     OLDFS=$IFS; IFS=$'\n'
     i=0
-    for line in ${g_masterColumnList#*$'\n'};do   # Skip the list header
+    for line in ${g_masterTableList#*$'\n'};do   # Skip the list header
 
         # If this table name (column 0 - the only column) matches the regex then take it, else skip this line
         [[ ${line:${_expand_columnOffsets[0]}:${_expand_columnWidths[0]}} =~ ^($_expand_nameRegex) ]]
@@ -1121,7 +1156,7 @@ function setupTableInfoParser()
     unset _expand_columnOffsets _expand_columnWidths
 
     # A table names list is a single column listing the table names. Compare to the columns list which has several columns.
-    [[ ${g_masterColumnList:1} =~ .([^$'\n']*)$'\n' ]]
+    [[ ${g_masterTableList:1} =~ .([^$'\n']*)$'\n' ]]
     _expand_columnOffsets[0]=1                      # one space in front
     _expand_columnWidths[0]=${#BASH_REMATCH[1]}     # distance to end of line
 }

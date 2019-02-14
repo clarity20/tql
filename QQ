@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+
+: ${TQL_HOME:=$HOME/tql}
+source $TQL_HOME/db_functions
+
+SCRIPT_NAME=${0##*/}
+validate_single_column "$@"
+
+MAIN_TABLE=$1
+if [[ $MAIN_TABLE =~ ^[-] ]]; then
+    setError ${rc[INVOCATION_SYNTAX]}
+    doExit
+fi
+shift
+
+readSchemaAndConfigure $MAIN_TABLE || doExit
+
+# Using the configs just loaded, build the query parts
+if parseCompletely "$STANDARD_COLS" "$MAIN_TABLE" "$primaryColumn" "$WHERE_PRECLAUSE" "$@"; then
+    getReturnValues OPTIONS ACTION_CLAUSE WHERE_CLAUSE LIMIT sortInstructions queryType
+else
+    doExit
+fi
+
+# Form the query from its parts
+formQuery $queryType "$MAIN_TABLE" "$ACTION_CLAUSE" "$WHERE_CLAUSE" "$LIMIT"
+getReturnValue fullQuery
+
+# Display the query if requested
+isOptionOn "q|query" $OPTIONS
+if (($?)); then
+    setError ${rc[SUCCESS]} "$fullQuery"
+    doExit
+fi
+
+# Execute the query
+if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$fullQuery"); then
+    setError $?; doExit "Error running query."
+fi
+
+# For SELECT queries, display the result set
+setError ${rc[SUCCESS]}
+if [[ $queryType == ${qt[SELECT]} ]]; then
+    if [[ -n $RAW_RESULT ]]; then
+        foldResultSet "$RAW_RESULT" "$sortInstructions"
+    else
+        setError ${rc[EMPTY_RESULT_SET]}
+    fi
+fi
+doExit
+

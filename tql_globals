@@ -12,6 +12,24 @@ declare -r strongQuote="'"
 declare -r weakQuote='"'
 declare -r eitherQuote=$strongQuote$weakQuote
 
+# The reference data descriptions used to expand abbreviated table or column names
+g_masterTableList=""
+g_masterColumnList=""
+
+# Storage for configuration settings loaded upon startup
+declare -A g_config
+
+# The possible types of configurable regexes
+declare -A rgx
+rgx=(
+    [NORMAL]=0
+    [DEFAULT_DATE]=1
+    [DEFAULT_INT]=2
+    [DEFAULT_FLOAT]=3
+    [DEFAULT_ALPHA]=4
+    [DELETED]=9
+)
+
 # Define the markup flags that describe token types, metadata, and data types.
 declare -A tt
 tt=(
@@ -68,30 +86,72 @@ declare -r g_expandedTypes=${tt[EXPANDED_WORD]}${tt[EXPANDED_SEQUENCE]}${tt[EXPA
 declare -r g_ncvTypeMarkers=${tt[END_NCV]}${tt[END_CV]}${tt[END_V]}
 
 ########################################################################
-# Error/exception handling: Return codes and global error message buffer
+# query types
+########################################################################
+declare -A qt
+qt=(
+    [SELECT]=0
+    [UPDATE]=1
+    [INSERT]=2
+    [DELETE]=3
+)
+
+########################################################################
+# Error/exception handling via return codes and error messages
 # NB: Since the shell limits return codes to [0,255] we might need
-# to define additional arrays of return codes. Just be careful about
+# to define additional collections of return codes. Just be careful about
 # the duplicate meanings that certain numeric code values would have.
 ########################################################################
 declare -A rc
-declare -i g_returnCode
-g_statusMsg=""
 rc=(
     [SUCCESS]=0
     [INVALID_TYPE]=1
     [INFEASIBLE_EXPR]=2
+    [INVOCATION_SYNTAX]=3
+    [EMPTY_RESULT_SET]=4
+    [ILL_FORMED_CONFIG_FILE]=5
+)
+declare -a eMsg
+eMsg=(
+    ""
+    "Invalid type for expression '\$expression'"
+    "Illegal grammar / no feasible interpretation for '\$expression'."
+    "First non-option argument must be a table name."
+    "No results returned."
+    "Attribute '\$attribute' not allowed in regex section of config file."
 )
 
+declare -i g_returnCode=${rc[SUCCESS]}
+g_statusMsg=""
+g_errorStream=/dev/stderr
+
+###########
+# setError (returnCode [, errMsg] )
+# Sets the internal error code and error message
+# errMsg defaults to the hard-coded message in array "rc" above
+###########
 function setError()
 {
     g_returnCode=$1
-    if [[ -n $2 ]]; then g_statusMsg=$2; fi
+    local message=${eMsg[$1]}
+    eval g_statusMsg=\"$message\"
+
+    # Allow the second argument to override the default message
+    if [[ -n $2 ]]; then
+        eval g_statusMsg=\"$2\"
+    fi
+
     return $g_returnCode
 }
 
+###########
+# doExit [message]
+# Exits the program with the current return code, dumping the current message
+# (if any) to the current error stream
+###########
 function doExit()
 {
-    echo $g_statusMsg > /dev/stderr
+    echo $g_statusMsg "$1" >> $g_errorStream
     exit $g_returnCode
 }
 

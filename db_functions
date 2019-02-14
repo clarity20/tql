@@ -3,6 +3,8 @@
 # Set some essential variables
 : ${BASHFUNC_HOME:=$HOME}
 : ${TQL_HOME:=$HOME/tql}
+: ${TQL_SCHEMA_CACHE:=$TQL_HOME/cache}
+: ${TQL_CONFIG_DIR:=$TQL_HOME/config}
 # Override the PATH with the locations of this project installation and your GNU/Linux coreutils
 # TODO Clarify which versions of which utilities are required. Verify POSIX compatibility.
 PATH=$TQL_HOME:$BASHFUNC_HOME/bin:/usr/local/bin:/usr/bin
@@ -51,9 +53,44 @@ g_dbClientOptions=""
 g_mainConjunction=AND
 g_haveParser=$FALSE
 
-# The reference data description used to expand abbreviated table or column names
-g_masterColumnList=""
+##############################################################################################
+# getQueryType
+##############################################################################################
+function getQueryType()
+{
+    isOptionOn u $OPTIONS
+    if (($? == $TRUE)); then
+        return ${qt[UPDATE]}
+    else
+        return ${qt[SELECT]}
+    fi
+}
 
+##############################################################################################
+# formQuery
+# Assembles a full query from its pieces based on the query type
+##############################################################################################
+function formQuery()
+{
+    declare -i queryType=$1
+    local tbls=$2 actionClause=$3 whereClause=$4 limit=$5
+    local fullQuery
+
+    case $queryType in
+        ${qt[UPDATE]})
+            fullQuery="UPDATE $tbls $actionClause $whereClause $limit"
+            ;;
+        ${qt[DELETE]})
+            fullQuery="DELETE FROM $tbls $whereClause $limit"
+            ;;
+        ${qt[SELECT]})
+            fullQuery="SELECT $actionClause FROM $tbls $whereClause $limit"
+            ;;
+    esac
+
+    setReturnValue "$fullQuery"
+    return ${rc[SUCCESS]}
+}
 
 ##############################################################################################
 # parseCompletely  standardColumns  tables  mainColumn  wherePreclause  <full sqlUtil cmd line>
@@ -93,17 +130,9 @@ function parseCompletely()
     fi
 
     # If the UPDATE option is active, prepare the SET clause
-#TODO Instead of bIsUpdate we should use an "enumeration" / function getQueryType to indicate the query type.
-#TODO A 0/1 indicator is not adequate when we introduce DELETE or INSERT queries.
-# So, for example:
-#    getQueryType; queryType=$?
-#   if ((queryType == queryType_UPDATE)); then
-#       ....
-#   fi
-#
-    isOptionOn u $OPTIONS
-    bIsUpdate=$?
-    if ((bIsUpdate)); then
+    declare -i queryType
+    getQueryType; queryType=$?
+    if ((queryType == ${qt[UPDATE]})); then
         parseOutSets "$@"
         if (($?)); then
             getReturnValues SET_CLAUSE setAbbrs remainingArgs
@@ -122,8 +151,8 @@ function parseCompletely()
     retVal=$?
     if ((retVal)); then  # some SELECT-type arguments were detected
 
-        # If it's not an UPDATE query, prepare the SELECT clause
-        if ((bIsUpdate)); then
+        # Reject a mixing of query types
+        if [[ $queryType != ${qt[SELECT]} ]]; then
             echo Error: Both SELECT and UPDATE commands were detected.
             return 17
         fi
@@ -156,20 +185,12 @@ function parseCompletely()
         # Assemble the full SELECT clause from the three parts without expanding
         assembleSelectClause "$rawPreselects" "$STANDARD_COLS" "$rawPostselects"
         getReturnValue ACTION_CLAUSE
+
     else
-        # To make things easier, come up with a list of table names *without* aliases
-        TABLE_NAMES=${TABLES//+( )+([[:alpha:]])*( ),*( )/,}     # in two steps, squeeze out table-name aliases "myTable mt," leaving just the table names
-        TABLE_NAMES=${TABLE_NAMES/%+( )+([[:alpha:]])}
-
-        # Obtain the table description so we can expand the column names and determine their data types
-        # TODO This looks at the first table name only.  Might revisit this later. N.B. expand() requires a fixed-width Desc, so catting
-        # TODO the separate desc files together would not work. Perhaps make Desc adjust its column-width values whenever a header line is encountered...
-        loadTableDescription ${TQL_SCHEMA_CACHE:-$TQL_HOME/tableDesc/${TABLE_NAMES%%,*}}
-
-        if ((bIsUpdate)); then
+        if [[ $queryType == ${qt[UPDATE]} ]]; then
             # Expand the SET clause column names and finish off the clause itself
 #MMMM Address the side effect of reworking expand():
-            expandColumnNames "$TABLE_NAMES" "$setAbbrs"
+            expandColumnNames "$MAIN_TABLE" "$setAbbrs"
             getReturnValue setCols setCodes
             OLDFS="$IFS"; IFS=$',' expandedSetCols=(${setCols})
 
@@ -209,7 +230,7 @@ function parseCompletely()
         fi
     fi
 
-    if ((! bIsUpdate)); then
+    if [[ $queryType == ${qt[SELECT]} ]]; then
         # Check for empty SELECT clause. (Should only be possible if "00" option is invoked.)
         if [[ ! "$ACTION_CLAUSE" =~ [[:alnum:]*] ]]; then
             echo ERROR: Your column selection is empty. Please select some columns. > /dev/stderr
@@ -267,9 +288,9 @@ function parseCompletely()
         fi
     fi
 
-    setReturnValues "$OPTIONS" "${SET_CLAUSE:-$ACTION_CLAUSE}" "$WHERE_CLAUSE" "$LIMIT_CLAUSE" "$sortInstructions"
+    setReturnValues "$OPTIONS" "${SET_CLAUSE:-$ACTION_CLAUSE}" "$WHERE_CLAUSE" "$LIMIT_CLAUSE" "$sortInstructions" $queryType
 
-    return $bIsUpdate
+    return ${rc[SUCCESS]}
 }
 
 ####################################################################################
@@ -520,6 +541,173 @@ function clearOption()
     fi
 }
 
+
+##########################################################################################
+# loadConfigForTable (configFile, tableName)
+# Loads the configuration settings into global memory
+##########################################################################################
+function loadConfigForTable()
+{
+    local configFile=$1 tableName=$2
+    local fileText
+
+    # Load the config file
+    mapfile -t < "$configFile"
+
+    # In two steps, trim the file down to the section for this table
+    # Step 1: remove the leading content
+    OLDFS=$IFS; IFS=$'\n'
+    [[ "${MAPFILE[*]}" =~ (($'\n'|^)\[$tableName])(.*) ]]
+    IFS=$OLDFS
+    local tableSection=${BASH_REMATCH[3]}
+    # Step 2: remove the trailing content, if any
+    if [[ "$tableSection" =~ $'\n'\[.*$ ]]; then
+    #]
+        if [[ "$tableSection" =~ (.*)"${BASH_REMATCH[0]}"$ ]]; then
+            tableSection=${BASH_REMATCH[1]}
+        fi
+
+    fi
+
+    declare -i regexMode=$FALSE regexCount=0
+    local regexType columnType
+    local attribute value value2
+
+    # Read and execute the variable assignments from the config file. In the case of regex
+    # assignments, there are some complications hidden from the user that we must unravel here.
+    for line in $tableSection; do
+
+        # Parse out the attribute and value. Skip all lines not structured this way.
+        if [[ $line =~ ^[[:space:]]*([[:alnum:]_]*)[\ ]?=(.*) ]]; then
+            attribute=${BASH_REMATCH[1]}
+            value=${BASH_REMATCH[2]}
+        else
+            continue
+        fi
+
+        # Branch on the attribute. First handle the cases that pre-empt the regex state machine,
+        # namely, the "default..." and the "regex" attributes
+        if [[ $attribute =~ ^default([A-Z].*) ]]; then
+            regexMode=$TRUE
+
+            # Set the canonical regex and its type
+            regexType=${BASH_REMATCH[1]}
+            if [[ $regexType == Int ]]; then
+                regex="^[-]?[:digit:]+$"
+                regexType=${rgx[DEFAULT_INT]}
+            elif [[ $regexType == Alpha ]]; then
+                regex="^[[:alnum:]_\ .]+$"
+                regexType=${rgx[DEFAULT_ALPHA]}
+            elif [[ $regexType == Float ]]; then
+                regex="^[-]?[:digit:]*\.[:digit:]+$"
+                regexType=${rgx[DEFAULT_FLOAT]}
+            elif [[ $regexType == Date ]]; then
+                regex="^[0-9]{4}[/-][0-9]{1,2}[/-][0-9]{1,2}$"
+                regexType=${rgx[DEFAULT_DATE]}
+            fi
+            g_config[regex$regexCount]=$regex
+            g_config[regexType$regexCount]=$regexType
+            # Increment the counter now because there might not be any further specifiers
+            # for this regex. If there are, they will compensate for this pre-incrementation.
+            ((regexCount++))
+
+        elif [[ $attribute == regex ]]; then
+            regexMode=$TRUE
+            regex=$value
+            regexType=${rgx[NORMAL]}
+            g_config[regex$regexCount]=$regex
+            g_config[regexType$regexCount]=$regexType
+            # Do not increment the counter. The REQUIRED specifier "column" will do it.
+            # ((regexCount++))
+
+        # The state machine for regexes. Different types of regex require or accept
+        # different special key-value specifiers.
+        elif ((regexMode)); then
+
+            case $regexType in
+              ${rgx[DEFAULT_ALPHA]})
+                # Optional specifier: length
+                if [[ $attribute == length ]]; then
+                    ((regexCount--))     # roll the counter back - see "Increment the counter" above
+                    # Length limit(s) can be a range, a half-empty range or a solitary number
+                    [[ $value =~ ^([0-9]*)([^0-9])?([0-9]*)$ ]]
+                    g_config[lowerBounds$regexCount]=${BASH_REMATCH[1]}
+                    if [[ -n ${BASH_REMATCH[3]} ]]; then    # 5-10 or -10
+                        g_config[upperBounds$regexCount]=${BASH_REMATCH[3]}
+                    elif [[ -n ${BASH_REMATCH[2]} ]]; then  # 5-
+                        g_config[upperBounds$regexCount]=99999
+                    else     # a solitary number
+                        g_config[upperBounds$regexCount]=${BASH_REMATCH[1]}
+                    fi
+                    ((regexCount++))
+                    regexMode=$FALSE
+                else
+                    # Any other specifier signals that we are no longer in regex mode.
+                    # Handle the specifier generically.
+                    g_config[$attribute]="$value"
+                    regexMode=$FALSE
+                fi
+                ;;
+
+              [${rgx[DEFAULT_INT]}${rgx[DEFAULT_FLOAT]}${rgx[DEFAULT_DATE]}])
+                # Optional specifier: range
+                if [[ $attribute == range ]]; then
+                    ((regexCount--))     # roll the counter back - see "Increment the counter" above
+                    # Store the numeric or calendar limits
+                    if [[ $regexType == ${rgx[DEFAULT_INT]} ]]; then
+                        [[ $value =~ ^([-]?[0-9]+)-([-]?[0-9]+)$ ]]
+                    elif [[ $regexType == ${rgx[DEFAULT_FLOAT]} ]]; then
+                        [[ $value =~ ^([0-9.]+)-([0-9.]+)$ ]]
+                    else # [[ $regexType == ${rgx[DEFAULT_DATE]} ]]
+                        # Get the date range. Only full y4/m2/d2 dates are accepted, no shortcuts.
+                        [[ $value =~ ^([0-9]{4}/[0-9]{1,2}/[0-9]{1,2})-([0-9]{4}/[0-9]{1,2}/[0-9]{1,2})$ ]]
+                    fi
+                    g_config[lowerBounds$regexCount]=${BASH_REMATCH[1]}
+                    g_config[upperBounds$regexCount]=${BASH_REMATCH[2]}
+                    ((regexCount++))
+                    regexMode=$FALSE
+                else
+                    g_config[$attribute]="$value"
+                    regexMode=$FALSE
+                fi
+                ;;
+
+              ${rgx[NORMAL]})
+                # Required specifier: column; no other specifiers are allowed
+                if [[ $attribute == column ]]; then
+                    # Store the column, terminate regex mode and accept the regex
+                    g_config[column$regexCount]=$value
+                    # Look up the column type in the global column list and store it.
+                    # In the column list, accept a populated or an unpopulated table name column
+                    if [[ "$g_masterColumnList" =~ $'\n'\ [^\ ]*\ +$value[\ ]+([a-z]+) ]]; then
+                        columnType=${BASH_REMATCH[1]}
+                        sqlTypeToInternalType $columnType; getReturnValue columnType
+                        g_config[columnType$regexCount]=$columnType
+                        ((regexCount++))
+                        regexMode=$FALSE
+                    else
+                        regexMode=$FALSE
+                        setError ${rc[ILL_FORMED_CONFIG_FILE]} "Error: Unable to find column '\$value' in table '\$tableName'."
+                        return $?
+                    fi
+                else
+                    regexMode=$FALSE
+                    setError ${rc[ILL_FORMED_CONFIG_FILE]}
+                    return $?
+                fi
+                ;;
+            esac
+
+        # Normal variable assignments should be performed literally
+        else
+            g_config[$attribute]="$value"
+        fi
+    done
+
+    g_config[regexCount]=$regexCount
+
+    return ${rc[SUCCESS]}
+}
 
 ##########################################################################################
 # parseOutOptions  command_line...
@@ -878,8 +1066,8 @@ function generateWhereClause()
 
         # Begin the SQL subclause for the current argument
         local sql="$g_mainConjunction "
-        # If this subclause is one of several, enclose it in '(...)' 
-        # to ensure the "main" conjunction has least precedence 
+        # If this subclause is one of several, enclose it in '(...)'
+        # to ensure the "main" conjunction has least precedence
         if ((totalArguments > 1)); then
             sql+="( "
         fi
@@ -891,7 +1079,7 @@ function generateWhereClause()
             local givenComparator effectiveComparator comparatorPosition nestingLevel
 
             # Pull the next predicate, boolean, or parenthesis token from the parsed string
- 
+
             # Identify front-delimiters for predicates
             if [[ $rhs =~ ^${tokenDelimiter}${tt[BEGIN_NCV]}([0-9]+) ]]; then
                 ncvCounter=${BASH_REMATCH[1]}
@@ -991,7 +1179,7 @@ function getEffectiveComparator()
 {
     local predicate=$1
     local comparator comparatorPosition
-    
+
     if [[ $predicate =~ ${tokenDelimiter}([0-9]+)${tt[COMPARATOR]}[0-9]+([=\<\!\>]+) ]]; then
         comparatorPosition=${BASH_REMATCH[1]}
         comparator=${BASH_REMATCH[2]}
@@ -1032,7 +1220,7 @@ function normalizePredicate()
     # To further simplify constructing the SQL, we will recast negative comparators as positive
     # ones by factoring out the implied NOTs. This also makes working with NULLs easier.
     getEffectiveComparator "$predicate"; getReturnValues effectiveComparator comparatorPosition
-    
+
     setReturnValues "$predicate" "$effectiveComparator" "$comparatorPosition"
 }
 
@@ -1103,7 +1291,7 @@ function denudeTokens()
 ########################################################################################################
 function processNamedNCVArgument()
 {
-    local predicate=$1 effectiveComparator=$2 comparatorPosition=$3 
+    local predicate=$1 effectiveComparator=$2 comparatorPosition=$3
     local currentToken tokenType tokenValue givenComparator
     local currentSide=$LEFT_SIDE currentName
     local firstValue secondValue
