@@ -27,27 +27,10 @@ g_defaultAlnums=table_name
 #     the tableNames come before the columnNames (if any): we bring the tableNames to the front of the arg list.
 #     Then we can perform step (1), shift out $1, and then process everything else in the usual way
 
-# Step (0): Bring table name to front of arg list
-if [[ "$1" =~ ^[+-] ]]; then
-    index=1
-    for param in "$@"; do
-        if [[ "$param" =~ ^[^+-] ]]; then
-            break
-        else
-            ((index++))
-        fi
-    done
-    if ((index>1 && index<=$#)); then
-        paramList='"$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"'
-        # Swap the identified parameter with $1
-        paramList=${paramList/$index/1}
-        paramList=${paramList/1/$index}
-        # Chop down to the actual number of parameters: delete "$($#)+1" and whatever follows
-        paramList=${paramList%'"$'$(($#+1))*}
-        # Make the parameter swap effective
-        set $(eval echo $paramList)
-    fi
-fi
+# Step (0): Bring table name to the front of the positional parameters
+local parameters
+swapValueParameterToFront "$@" && getReturnValue parameters || doExit
+eval set -- $parameters
 
 # Step (1): Create the table_name part of the WHERE clause.
 if [[ "$1" =~ [.] ]]; then

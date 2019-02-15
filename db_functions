@@ -120,7 +120,7 @@ function parseCompletely()
     parseOutOptions "$@"
     if (($?)); then
         getReturnValues OPTIONS remainingArgs
-        eval set "-- "$remainingArgs
+        eval set -- $remainingArgs
     fi
 
     # Load the expression parser
@@ -136,7 +136,7 @@ function parseCompletely()
         parseOutSets "$@"
         if (($?)); then
             getReturnValues SET_CLAUSE setAbbrs remainingArgs
-            eval set "-- "$remainingArgs
+            eval set -- $remainingArgs
         else
             echo Error: The UPDATE flag is set without any UPDATE instructions.
             return 15
@@ -159,7 +159,7 @@ function parseCompletely()
 
         # Parse out the returned values
         getReturnValues rawPreselects rawPostselects remainingArgs
-        eval set "-- "$remainingArgs
+        eval set -- $remainingArgs
         if [[ $rawPreselects == " " ]]; then rawPreselects=; fi     ## old way was to use backticks so " " became ""
         if [[ $rawPostselects == " " ]]; then rawPostselects=; fi
     fi
@@ -706,6 +706,42 @@ function loadConfigForTable()
 
     g_config[regexCount]=$regexCount
 
+    return ${rc[SUCCESS]}
+}
+
+##########################################################################################
+# swapValueParameterToFront ("$@")
+# Prepares a move of the first value parameter (i.e. the first non-option) to the
+# first position, by constructing a string that can be eval-setted by the caller
+##########################################################################################
+function swapValueParameterToFront()
+{
+    declare -i index
+    local param
+    local paramList='"$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"'
+
+    if [[ "$1" =~ ^[+-] ]]; then
+        index=1
+        for param in "$@"; do
+            if [[ "$param" =~ ^[^+-] ]]; then
+                break
+            else
+                ((index++))
+            fi
+        done
+        if ((index>1 && index<=$#)); then
+            # Swap the identified parameter with $1
+            paramList=${paramList/$index/1}
+            paramList=${paramList/1/$index}
+            # Chop down to the actual number of parameters: delete "$($#+1)" and whatever follows
+            paramList=${paramList%'"$'$(($#+1))*}
+        else
+            setError ${rc[MISSING_ARGUMENT]}
+            return $?
+        fi
+    fi
+
+    setReturnValue "$paramList"
     return ${rc[SUCCESS]}
 }
 

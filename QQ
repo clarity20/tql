@@ -6,14 +6,14 @@ source $TQL_HOME/db_functions
 SCRIPT_NAME=${0##*/}
 validate_single_column "$@"
 
+# Read the main table name, the first non-option positional parameter
+local parameters
+swapValueParameterToFront "$@" && getReturnValue parameters || doExit
+eval set -- $parameters
 MAIN_TABLE=$1
-if [[ $MAIN_TABLE =~ ^[-] ]]; then
-    setError ${rc[INVOCATION_SYNTAX]}
-    doExit
-fi
 shift
 
-readSchemaAndConfigure $MAIN_TABLE || doExit
+readSchemaAndConfigure $MAIN_TABLE && getReturnValue MAIN_TABLE || doExit
 
 # Using the configs just loaded, build the query parts
 if parseCompletely "$STANDARD_COLS" "$MAIN_TABLE" "$primaryColumn" "$WHERE_PRECLAUSE" "$@"; then

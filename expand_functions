@@ -1063,6 +1063,7 @@ function readSchemaAndConfigure()
     local configFile=$TQL_CONFIG_DIR/${TQL_DBNAME}.cfg
     loadConfigForTable "$configFile" $tableName || return $?
 
+    setReturnValue "$tableName"
     return ${rc[SUCCESS]}
 }
 
