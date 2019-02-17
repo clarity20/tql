@@ -3,17 +3,21 @@
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 
-SCRIPT_NAME=${0##*/}
-validate_single_column "$@"
+declare -i helpCode
+helpOrExecute "$1" $#; helpCode=$?
+if ((helpCode != 0)); then
+    giveHelp "$0" $helpCode $TRUE
+    doExit
+fi
 
-# Read the main table name, the first non-option positional parameter
+# Ensure canonical syntax: main table name as the first positional parameter
 local parameters
 swapValueParameterToFront "$@" && getReturnValue parameters || doExit
 eval set -- $parameters
-MAIN_TABLE=$1
-shift
 
-readSchemaAndConfigure $MAIN_TABLE && getReturnValue MAIN_TABLE || doExit
+# Initialize and configure the script
+readSchemaAndConfigure "$1" && getReturnValue MAIN_TABLE || doExit
+shift
 
 # Using the configs just loaded, build the query parts
 if parseCompletely "$STANDARD_COLS" "$MAIN_TABLE" "$primaryColumn" "$WHERE_PRECLAUSE" "$@"; then

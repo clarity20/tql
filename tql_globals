@@ -30,7 +30,16 @@ rgx=(
     [DELETED]=9
 )
 
-# Define the markup flags that describe token types, metadata, and data types.
+declare -A help
+help=(
+    [NO_HELP]=0
+    [USAGE_HELP]=1
+    [QQ_HELP]=2
+)
+
+########################################################################
+# Markup flags that describe token types, metadata, and data types
+########################################################################
 declare -A tt
 tt=(
     [FUNCTION_ARITY]='A'
@@ -105,20 +114,23 @@ qt=(
 declare -A rc
 rc=(
     [SUCCESS]=0
-    [INVALID_TYPE]=1
+    [HELP_AND_EXIT]=1
     [INFEASIBLE_EXPR]=2
     [MISSING_ARGUMENT]=3
     [EMPTY_RESULT_SET]=4
     [ILL_FORMED_CONFIG_FILE]=5
+    [INVALID_TYPE]=6
 )
 declare -a eMsg
 eMsg=(
     ""
-    "Invalid type for expression '\$expression'"
+    "USAGE: \$programName \$tableNameStandIn [-{option} | {query_component} [...]]\n
+\tType \$programName -h or --help for detailed help."
     "Illegal grammar / no feasible interpretation for '\$expression'."
     "First non-option argument must be a table name."
     "No results returned."
     "Attribute '\$attribute' not allowed in regex section of config file."
+    "Invalid type for expression '\$expression'"
 )
 
 declare -i g_returnCode=${rc[SUCCESS]}
@@ -146,12 +158,12 @@ function setError()
 
 ###########
 # doExit [message]
-# Exits the program with the current return code, dumping the current message
-# (if any) to the current error stream
+# Exits the program with the current return code, dumping the global message
+# (if any) or the given message to the current error stream
 ###########
 function doExit()
 {
-    echo $g_statusMsg "$1" >> $g_errorStream
+    echo -e $g_statusMsg "$1" >> $g_errorStream
     exit $g_returnCode
 }
 

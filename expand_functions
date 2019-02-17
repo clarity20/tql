@@ -1045,25 +1045,44 @@ finalizeExpandedColumnName()
 }
 
 ####################################################################################
-# readSchemaAndConfigure
+# readSchemaAndConfigure (table)
+# readMetadataAndConfigure (script, columns|tables|routines)
+#
+# Initialize a script that uses the QQ library
+# The former is for "QQ" and QQ-derived scripts that pertain to ordinary data.
+# The latter is for scripts such as the provided FindTable, etc., that pertain to metadata.
 ####################################################################################
 function readSchemaAndConfigure()
 {
-    local tableName=$1 tableList
+    local tableName=$1
 
-    # Expand to the full table name
+    # Expand to the full table name given a possibly-abbreviated name
     loadListOfTables "$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.tables"
     getExpandedTableNames $tableName; getReturnValue tableList
     promptForExpansion $tableName "$tableList"; getReturnValue tableName
 
-    # Get the table's column list
-    loadTableDescription "$TQL_SCHEMA_CACHE/$TQL_DBNAME/$tableName"
+    # Get the list of columns for the table
+    loadTableDescription "$TQL_SCHEMA_CACHE/$TQL_DBNAME/${tableName}.columns"
 
     # Load the configuration for the table
-    local configFile=$TQL_CONFIG_DIR/${TQL_DBNAME}.cfg
+    local configFile=$TQL_CONFIG_DIR/${TQL_DBNAME}.cfg    # stored at DB level
     loadConfigForTable "$configFile" $tableName || return $?
 
     setReturnValue "$tableName"
+    return ${rc[SUCCESS]}
+}
+
+function readMetadataAndConfigure()
+{
+    load scriptName=$1 metadataType=$2
+
+    # Get the required list of attributes from the metadata. This will be either the columns, the tables or the routines
+    loadTableDescription "$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.$metadataType"
+
+    # Load the script-specific configuration
+    local configFile=$TQL_CONFIG_DIR/metadataScripts.cfg    # stored at global level
+    loadConfigForTable "$configFile" $scriptName || return $?
+
     return ${rc[SUCCESS]}
 }
 

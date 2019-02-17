@@ -543,6 +543,48 @@ function clearOption()
 
 
 ##########################################################################################
+# giveHelp (script name, argc, bShowTableName)
+# If you need to ask, close this file immediately
+##########################################################################################
+function giveHelp()
+{
+    local programName=${1##*/}
+    local helpType=${2:-${help[QQ_HELP]}}
+    local isTableNameNeeded=${3:-$FALSE}
+
+    if [[ $helpType == ${help[USAGE_HELP]} ]]; then
+        # Set the error code to display a USAGE message, including
+        # a table name argument for those scripts that require one
+        local tableNameStandIn=""
+        if ((isTableNameNeeded)); then tableNameStandIn="tableName"; fi
+        setError ${rc[HELP_AND_EXIT]}
+    else
+        : # TODO: A far more extensive help message is needed.
+        # Be sure to choose the right one for the current script;
+        # switch on $2 to do that and pencil $1 into the message:
+        #   local helpMessage= ...
+        #   setError ${rc[HELP_AND_EXIT]} "$helpMessage"
+        setError ${rc[HELP_AND_EXIT]} "Details to come."
+    fi
+
+    return ${rc[SUCCESS]}
+}
+
+function helpOrExecute()
+{
+    local firstArgument=${1,,}
+    declare -ir argumentCount=$2
+
+    if [[ $argumentCount == 0 ]]; then
+        return ${help[USAGE_HELP]}
+    elif [[ $firstArgument =~ ^-+h(elp)?$ ]]; then
+        return ${help[QQ_HELP]}
+    else
+        return ${help[NO_HELP]}
+    fi
+}
+
+##########################################################################################
 # loadConfigForTable (configFile, tableName)
 # Loads the configuration settings into global memory
 ##########################################################################################
