@@ -1,0 +1,11 @@
+ table_name  column_name  column_type  column_default    
+             fake         int          0
+             foot         int          0
+             fork         int          0
+             folly        varchar      Y
+             capTestI     varchar      X
+             capTestIv    int          X
+             matchSeta    int           
+             matchSetb    char          
+             matchSetc    char          
+
