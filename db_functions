@@ -543,69 +543,6 @@ function clearOption()
 
 
 ##########################################################################################
-# giveHelp (scriptName, argc, objectName or code)
-# If you need to ask, close this file immediately
-##########################################################################################
-function giveHelp()
-{
-    local programName=${1##*/}
-    local helpType=${2:-${help[QQ_HELP]}}
-    local objectName_0=${3:-""} objectName=""
-    local trailingArguments=${4:-"[-{option} | {query_component}] [...]"}
-
-    # For USAGE messages, set the object name(s) to be displayed and the exit code
-    if [[ $helpType == ${help[USAGE_HELP]} ]]; then
-
-        # Pluralized object names
-        if [[ $objectName_0 =~ s$ ]]; then
-            # "...Rows" indicates there is a row-count option
-            if [[ $objectName_0 =~ (.*)Rows$ ]]; then
-                objectName="[-rowCount] "
-                objectName_0=${BASH_REMATCH[1]}
-            fi
-            # Rephrase the plural as a list option
-            objectName+=${objectName_0/%s}"Name(List)"
-
-        # Special cases
-        elif [[ $objectName_0 == both ]]; then
-            objectName="tableName(List) [columnName(List)]"
-
-        # Singular object names (order-sensitive code!)
-        elif [[ -n $objectName_0 ]]; then
-            objectName=${objectName_0}"Name"
-
-        # Let empty names stay empty
-        fi
-
-        setError ${rc[HELP_AND_EXIT]}
-
-    else
-        : # TODO: A far more extensive help message is needed.
-        # Be sure to choose the right one for the current script;
-        # switch on $2 to do that and pencil $1 into the message:
-        #   local helpMessage= ...
-        #   setError ${rc[HELP_AND_EXIT]} "$helpMessage"
-        setError ${rc[HELP_AND_EXIT]} "Details to come."
-    fi
-
-    return ${rc[SUCCESS]}
-}
-
-function shouldHelpOrExecute()
-{
-    local firstArgument=${1,,}
-    declare -ir argumentCount=$2
-
-    if [[ $argumentCount == 0 ]]; then
-        return ${help[USAGE_HELP]}
-    elif [[ $firstArgument =~ ^-+h(elp)?$ ]]; then
-        return ${help[QQ_HELP]}
-    else
-        return ${help[NO_HELP]}
-    fi
-}
-
-##########################################################################################
 # loadConfigForTable (configFile, tableName)
 # Loads the configuration settings into global memory
 ##########################################################################################
