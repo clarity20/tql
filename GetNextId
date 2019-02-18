@@ -3,11 +3,10 @@
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 
-SCRIPT_NAME=${0##*/}
-
-if [[ $# -lt 1 || $# -gt 2 ]]; then
-    echo "USAGE: $SCRIPT_NAME  table_name\(s\)_regex"
-    exit 1
+shouldHelpOrExecute "$1" $#; declare -i helpCode=$?
+if ((helpCode)); then
+    giveHelp "$0" $helpCode tables " "
+    doExit
 fi
 
 STANDARD_COLS="t.table_name as table_name,column_name,auto_increment"

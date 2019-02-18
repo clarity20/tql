@@ -543,21 +543,42 @@ function clearOption()
 
 
 ##########################################################################################
-# giveHelp (script name, argc, bShowTableName)
+# giveHelp (scriptName, argc, objectName or code)
 # If you need to ask, close this file immediately
 ##########################################################################################
 function giveHelp()
 {
     local programName=${1##*/}
     local helpType=${2:-${help[QQ_HELP]}}
-    local isTableNameNeeded=${3:-$FALSE}
+    local objectName_0=${3:-""} objectName=""
+    local trailingArguments=${4:-"[-{option} | {query_component}] [...]"}
 
+    # For USAGE messages, set the object name(s) to be displayed and the exit code
     if [[ $helpType == ${help[USAGE_HELP]} ]]; then
-        # Set the error code to display a USAGE message, including
-        # a table name argument for those scripts that require one
-        local tableNameStandIn=""
-        if ((isTableNameNeeded)); then tableNameStandIn="tableName"; fi
+
+        # Pluralized object names
+        if [[ $objectName_0 =~ s$ ]]; then
+            # "...Rows" indicates there is a row-count option
+            if [[ $objectName_0 =~ (.*)Rows$ ]]; then
+                objectName="[-rowCount] "
+                objectName_0=${BASH_REMATCH[1]}
+            fi
+            # Rephrase the plural as a list option
+            objectName+=${objectName_0/%s}"Name(List)"
+
+        # Special cases
+        elif [[ $objectName_0 == both ]]; then
+            objectName="tableName(List) [columnName(List)]"
+
+        # Singular object names (order-sensitive code!)
+        elif [[ -n $objectName_0 ]]; then
+            objectName=${objectName_0}"Name"
+
+        # Let empty names stay empty
+        fi
+
         setError ${rc[HELP_AND_EXIT]}
+
     else
         : # TODO: A far more extensive help message is needed.
         # Be sure to choose the right one for the current script;
@@ -570,7 +591,7 @@ function giveHelp()
     return ${rc[SUCCESS]}
 }
 
-function helpOrExecute()
+function shouldHelpOrExecute()
 {
     local firstArgument=${1,,}
     declare -ir argumentCount=$2
@@ -2188,26 +2209,5 @@ function foldResultSet()
     # Return the "key column" as a single row vector
     # echo ${KEY_ARR[@]}
 }
-
-
-############################################################################
-# Minor routines
-############################################################################
-validate_single_column()
-{
-    if [[ $# -lt 1 ]]; then
-        echo USAGE:  $FUNCNAME  columnNameRegex
-        exit 12
-    fi
-}
-
-validate_id_or_name_regex()
-{
-    if [[ $# -lt 1 ]]; then
-        echo USAGE:  $FUNCNAME  id_or_nameRegex
-        exit 34
-    fi
-}
-
 
 

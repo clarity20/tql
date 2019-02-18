@@ -3,12 +3,10 @@
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 
-SCRIPT_NAME=${0##*/}
-
-if [[ $# -lt 1 ]]; then
-    echo "USAGE: $SCRIPT_NAME  tableNameRegex  [columnNameRegex]  [other args]"
-    echo "       Table names before column names, please."
-    exit 1
+shouldHelpOrExecute "$1" $#; declare -i helpCode=$?
+if ((helpCode)); then
+    giveHelp "$0" $helpCode both
+    doExit
 fi
 
 # Initialize the query parts.

@@ -3,8 +3,11 @@
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 
-SCRIPT_NAME=${0##*/}
-validate_single_column "$@"
+shouldHelpOrExecute "$1" $#; declare -i helpCode=$?
+if ((helpCode)); then
+    giveHelp "$0" $helpCode
+    doExit
+fi
 
 STANDARD_COLS="id,name,zipcode"   # In "Table1" the columns are id, name, zipcode
 TABLES="table1"

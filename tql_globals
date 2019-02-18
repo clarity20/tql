@@ -124,7 +124,7 @@ rc=(
 declare -a eMsg
 eMsg=(
     ""
-    "USAGE: \$programName \$tableNameStandIn [-{option} | {query_component} [...]]\n
+    "USAGE: \$programName \$objectName \$trailingArguments\n
 \tType \$programName -h or --help for detailed help."
     "Illegal grammar / no feasible interpretation for '\$expression'."
     "First non-option argument must be a table name."

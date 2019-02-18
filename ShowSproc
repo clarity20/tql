@@ -3,20 +3,16 @@
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 
-SCRIPT_NAME=${0##*/}
-
-if [[ $# -lt 1 ]]; then
-    echo USAGE: $SCRIPT_NAME ' sproc_name'
-    echo '    Shows the code for the installed procedure.'
-    exit 1
+shouldHelpOrExecute "$1" $#; declare -i helpCode=$?
+if ((helpCode)); then
+    giveHelp "$0" $helpCode procedures
+    doExit
 fi
 
 # Extract the options from the command line
 parseOutOptions "$@"
 getReturnValue OPTIONS remainingArgs
-eval set ${remainingArgs}
-
-# TODO: Expand this feature to print out SQL sProc text files if the right option is set.
+eval set -- ${remainingArgs}
 
 # This script currently does not allow modification of the SELECT clause. In particular, the result set is parsed
 # on the ASSUMPTION that the selection is exactly the ACTION_CLAUSE defined here.
@@ -51,7 +47,8 @@ dataRows="${BASH_REMATCH[2]}" # [1] = column hdr   [2] = data rows
 mapfile -t <<< "$dataRows"
 
 # Process the lines.
-for ((i=0; i<${#MAPFILE[*]}; i++)); do
+local lineCount=${#MAPFILE[*]}
+for ((i=0; i<lineCount; i++)); do
 
     # Determine when a new record starts
     if [[ "${MAPFILE[i]}" =~ ^\| ]]; then

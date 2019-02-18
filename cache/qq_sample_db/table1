@@ -1,8 +1,0 @@
- table_name  column_name     column_type   column_default    
- table1      id              int(11)       NULL
- table1      name            varchar(20)   NULL
- table1      zipcode         char(6)       NULL
- table1      rating          decimal(8,4)  NULL
- table1      rateCode        char(2)       NULL
- table1      activationDate  date          NULL
-

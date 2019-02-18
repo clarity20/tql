@@ -3,10 +3,9 @@
 : ${TQL_HOME:=$HOME/tql}
 source $TQL_HOME/db_functions
 
-declare -i helpCode
-helpOrExecute "$1" $#; helpCode=$?
-if ((helpCode != 0)); then
-    giveHelp "$0" $helpCode $TRUE
+shouldHelpOrExecute "$1" $#; declare -i helpCode=$?
+if ((helpCode)); then
+    giveHelp "$0" $helpCode table
     doExit
 fi
 
