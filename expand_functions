@@ -1073,10 +1073,13 @@ function readSchemaAndConfigure()
 
 function readMetadataAndConfigure()
 {
-    load scriptName=$1 metadataType=$2
+    local scriptName=$1 metadataType=$2
+    local descFile=$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.$metadataType
 
-    # Get the required list of attributes from the metadata. This will be either the columns, the tables or the routines
-    loadTableDescription "$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.$metadataType"
+    # Read the list of objects from the metadata. These will be either the columns, the tables or the routines.
+    # Force an early return on error to prevent infinite loops in "Desc".
+    [[ -r "$descFile" ]] && loadTableDescription "$descFile" \
+        || { setError ${rc[DESCRIPTION_FILE_READ]}; return $?; }
 
     # Load the script-specific configuration
     local configFile=$TQL_CONFIG_DIR/metadataScripts.cfg    # stored at global level
@@ -1101,7 +1104,7 @@ function loadTableDescription()
 
     # Only query the DB if no cached file is available
     else
-        g_masterColumnList=$(Desc "$MAIN_TABLE" +column_default -dontExpand)      # subshell because we're calling a script, not a function
+        g_masterColumnList=$(Desc "${tableName:-${scriptName}}" +column_default -dontExpand)      # subshell because we're calling a script, not a function
     fi
 }
 

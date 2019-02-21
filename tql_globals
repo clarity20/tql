@@ -188,6 +188,7 @@ rc=(
     [EMPTY_RESULT_SET]=4
     [ILL_FORMED_CONFIG_FILE]=5
     [INVALID_TYPE]=6
+    [DESCRIPTION_FILE_READ]=7
 )
 declare -a eMsg
 eMsg=(
@@ -198,7 +199,8 @@ eMsg=(
     "First non-option argument must be a table name."
     "No results returned."
     "Attribute '\$attribute' not allowed in regex section of config file."
-    "Invalid type for expression '\$expression'"
+    "Invalid type for expression '\$expression'."
+    "Cannot read \$metadataType description file '\$descFile'."
 )
 
 declare -i g_returnCode=${rc[SUCCESS]}
