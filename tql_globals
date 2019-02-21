@@ -226,12 +226,12 @@ function setError()
 
 ###########
 # doExit [message]
-# Exits the program with the current return code, dumping the global message
-# (if any) or the given message to the current error stream
+# Exits the program with the current return code, dumping the given message
+# (if any) or the global message to the current error stream
 ###########
 function doExit()
 {
-    echo -e $g_statusMsg "$1" >> $g_errorStream
+    echo -e "${1:-$g_statusMsg}" >> $g_errorStream
     exit $g_returnCode
 }
 

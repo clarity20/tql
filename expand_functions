@@ -1054,7 +1054,7 @@ finalizeExpandedColumnName()
 ####################################################################################
 function readSchemaAndConfigure()
 {
-    local tableName=$1
+    local tableName=${1##*/}
 
     # Expand to the full table name given a possibly-abbreviated name
     loadListOfTables "$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.tables"
@@ -1068,7 +1068,6 @@ function readSchemaAndConfigure()
     local configFile=$TQL_CONFIG_DIR/${TQL_DBNAME}.cfg    # stored at DB level
     loadConfigForTable "$configFile" $tableName || return $?
 
-    setReturnValue "$tableName"
     return ${rc[SUCCESS]}
 }
 

@@ -9,14 +9,13 @@ if ((helpCode)); then
     doExit
 fi
 
-ACTION_CLAUSE='*'
-
 # Parse the cmdline opts
 parseOutOptions "$@"
-getReturnValues OPTIONS remainingArgs
-eval set -- ${remainingArgs}
+getReturnValues OPTIONS queryArguments
+eval set -- $queryArguments
 
-NUMROWS=$(isOptionOn "[0-9]+" $OPTIONS -show)
+isOptionOn "[0-9]+" $OPTIONS -show
+getReturnValue NUMROWS
 : ${NUMROWS:=10}
 
 OLDFS=$IFS; IFS=$'\n'
@@ -29,21 +28,15 @@ if [[ "$1" =~ [,%] ]]; then
     SHOW_TABLENAME_HEADER=1
 fi
 
-LIMIT="LIMIT $NUMROWS"
-    
 for TABLE in ${TABLE_ARR[*]}; do
     # Build a compound SQL command by stringing together the individual queries
-    DB_COMMAND+="$g_ACTION $ACTION_CLAUSE FROM $TABLE $WHERE_CLAUSE $LIMIT;"$'\n'
+    fullQuery+="SELECT * FROM $TABLE LIMIT $NUMROWS;"$'\n'
 done
 
-isOptionOn "q|query" $OPTIONS
-if (($?)); then
-    echo "$DB_COMMAND"
-    exit 0
-fi
-
 # Call the db engine once and array-ify the result
-RAW_RESULT=($("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND")) || exit $?
+if ! RAW_RESULT=($("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$fullQuery")); then
+    setError $?; doExit "Error running query."
+fi
 
 lineCount=0
 

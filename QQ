@@ -14,19 +14,13 @@ local parameters
 swapValueParameterToFront "$@" && getReturnValue parameters || doExit
 eval set -- $parameters
 
-# Initialize and configure the script
-readSchemaAndConfigure "$1" && getReturnValue MAIN_TABLE || doExit
+readSchemaAndConfigure "$1" || doExit
 shift
 
-# Using the configs just loaded, build the query parts
-if parseCompletely "$STANDARD_COLS" "$MAIN_TABLE" "$primaryColumn" "$WHERE_PRECLAUSE" "$@"; then
-    getReturnValues OPTIONS ACTION_CLAUSE WHERE_CLAUSE LIMIT sortInstructions queryType
-else
-    doExit
-fi
-
-# Form the query from its parts
-formQuery $queryType "$MAIN_TABLE" "$ACTION_CLAUSE" "$WHERE_CLAUSE" "$LIMIT"
+# Parse the TQL and generate the SQL
+parseCompletely "$@" || doExit
+getReturnValues OPTIONS ACTION_CLAUSE WHERE_CLAUSE LIMIT sortInstructions queryType
+formQuery $queryType "$ACTION_CLAUSE" "$WHERE_CLAUSE" "$LIMIT"
 getReturnValue fullQuery
 
 # Display the query if requested
@@ -42,13 +36,8 @@ if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$fullQuer
 fi
 
 # For SELECT queries, display the result set
-setError ${rc[SUCCESS]}
 if [[ $queryType == ${qt[SELECT]} ]]; then
-    if [[ -n $RAW_RESULT ]]; then
-        foldResultSet "$RAW_RESULT" "$sortInstructions"
-    else
-        setError ${rc[EMPTY_RESULT_SET]}
-    fi
+    foldResultSet "$RAW_RESULT" "$sortInstructions"
 fi
 doExit
 

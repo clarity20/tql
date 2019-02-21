@@ -9,13 +9,7 @@ if ((helpCode)); then
     doExit
 fi
 
-# Initialize the query parts.
-STANDARD_COLS="table_name,column_name,column_type"
-TABLES="information_schema.columns c"
-WHERE_PRECLAUSE="table_schema='$TQL_DBNAME'"
-
-# Column name inference rules
-g_defaultAlnums=table_name
+readMetadataAndConfigure "$1" columns || doExit
 
 # Three major steps to prepare the query:
 #
@@ -26,7 +20,7 @@ g_defaultAlnums=table_name
 #     Then we can perform step (1), shift out $1, and then process everything else in the usual way
 
 # Step (0): Bring table name to the front of the positional parameters
-local parameters
+declare parameters
 swapValueParameterToFront "$@" && getReturnValue parameters || doExit
 eval set -- $parameters
 
@@ -41,58 +35,45 @@ if [[ "$1" =~ [.] ]]; then
 else
     relativeTable="$1"
 fi
+# Format the table names properly for the main query
 if [[ "$relativeTable" =~ , ]]; then
-    # If we're given a comma-separated list of multiple table names/regexes, invoke the special argument parser
-    generateWhereClause "" "" "$relativeTable"
-    getReturnValue mainWhereClause
-    WHERE_PRECLAUSE+=$mainWhereClause
+    generateWhereClause "$relativeTable"; getReturnValue mainWhereClause
+    g_config[wherePreclause]+=$mainWhereClause
 else
-    WHERE_PRECLAUSE+=" AND table_name LIKE '$relativeTable'"
+    g_config[wherePreclause]+=" AND table_name LIKE '$relativeTable'"
 fi
 shift
 
 # Step (2): Normal parsing of everything else
 
-# The normal parse uses some different default column names
-g_defaultAlnums=c.column_name
+# Reconfigure for the normal parse
+g_config[defaultAlpha]=column_name
 
-# Invoke the main parsing routine
-parseCompletely  "$STANDARD_COLS"  "$TABLES"  "column_name"  "$WHERE_PRECLAUSE"  "$@"
-retVal=$?
-if ((retVal >= 10)); then
-    echo Exiting.
-    exit $retVal
-elif ((retVal == 1)); then
-    g_ACTION=UPDATE
-fi
+# Parse the TQL and generate the SQL
+parseCompletely "$@" || doExit
+getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions  queryType
+formQuery $queryType "$ACTION_CLAUSE" "$WHERE_CLAUSE" "$LIMIT"
+getReturnValue fullQuery
 
-getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions
-
-if [[ $g_ACTION == UPDATE ]]; then
-    DB_COMMAND="$g_ACTION $TABLES $ACTION_CLAUSE $WHERE_CLAUSE $LIMIT"
-else
-    DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES $WHERE_CLAUSE $LIMIT"
-fi
-
+# Display the query if requested
 isOptionOn "q|query" $OPTIONS
 if (($?)); then
-    echo "$DB_COMMAND"
-    exit 0
+    setError ${rc[SUCCESS]}
+    doExit "$fullQuery"
 fi
 
-RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND") || exit $?
-if [[ $g_ACTION == UPDATE ]]; then exit 0; fi
+# Execute the query
+if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$fullQuery"); then
+    setError $?; doExit "Error running query."
+fi
 
-isOptionOn "dontExpand|de" $OPTIONS    # Not the best way to check that Desc is being invoked directly from the cmd line...
-#[[ -z $PS1 ]]
+# For SELECT queries, display the result set
+if [[ $queryType == ${qt[SELECT]} ]]; then
+    foldResultSet "$RAW_RESULT" "$sortInstructions"
+fi
+
+# Only dump the execution message (if there is one) in command-line mode
+isOptionOn "dontExpand|de" $OPTIONS
 cmdLineMode=$((! $?))
-
-if [[ -z $RAW_RESULT ]]; then
-    if ((cmdLineMode)); then
-        echo No table/column found. > /dev/stderr
-        exit 1
-    fi
-fi
-
-foldResultSet "$RAW_RESULT" "$sortInstructions"
+[[ $cmdLineMode == $TRUE ]] && doExit || doExit ""
 

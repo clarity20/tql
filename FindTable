@@ -9,47 +9,29 @@ if ((helpCode)); then
     doExit
 fi
 
-STANDARD_COLS="table_name"    # others: auto_increment, ...
-TABLES=information_schema.tables
+readMetadataAndConfigure "$1" tables || doExit
 
-g_defaultAlnums=table_name
+# Parse the TQL and generate the SQL
+parseCompletely "$@" || doExit
+getReturnValues OPTIONS ACTION_CLAUSE WHERE_CLAUSE LIMIT sortInstructions queryType
+formQuery $queryType "$ACTION_CLAUSE" "$WHERE_CLAUSE" "$LIMIT"
+getReturnValue fullQuery
 
-# Invoke the main parsing routine
-parseCompletely  "$STANDARD_COLS"  "$TABLES"  "table_name"  "$WHERE_PRECLAUSE"  "$@"
-retVal=$?
-if ((retVal >= 10)); then
-    echo Exiting.
-    exit $retVal
-elif ((retVal == 1)); then
-    g_ACTION=UPDATE
-fi
-
-getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions
-
-if [[ $WHERE_CLAUSE =~ [[:alpha:]] ]]; then
-    WHERE_CLAUSE+=" AND "
-fi
-WHERE_CLAUSE+="table_schema='$TQL_DBNAME'"
-
-if [[ $g_ACTION == UPDATE ]]; then
-    DB_COMMAND="$g_ACTION $TABLES $ACTION_CLAUSE $WHERE_CLAUSE $LIMIT"
-else
-    DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES $WHERE_CLAUSE $LIMIT"
-fi
-
+# Display the query if requested
 isOptionOn "q|query" $OPTIONS
 if (($?)); then
-    echo "$DB_COMMAND"
-    exit 0
+    setError ${rc[SUCCESS]}
+    doExit "$fullQuery"
 fi
 
-RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND") || exit $?
-if [[ $g_ACTION == UPDATE ]]; then exit 0; fi
-
-if [[ -z $RAW_RESULT ]]; then
-    echo No Tables found. > /dev/stderr
-    exit 1
+# Execute the query
+if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$fullQuery"); then
+    setError $?; doExit "Error running query."
 fi
 
-foldResultSet "$RAW_RESULT" "$sortInstructions"
+# For SELECT queries, display the result set
+if [[ $queryType == ${qt[SELECT]} ]]; then
+    foldResultSet "$RAW_RESULT" "$sortInstructions"
+fi
+doExit
 

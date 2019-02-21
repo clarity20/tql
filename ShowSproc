@@ -9,37 +9,37 @@ if ((helpCode)); then
     doExit
 fi
 
-# Extract the options from the command line
+readMetadataAndConfigure "$1" routines || doExit
+
+# Extract the option-type arguments
 parseOutOptions "$@"
-getReturnValue OPTIONS remainingArgs
-eval set -- ${remainingArgs}
+getReturnValues OPTIONS queryArguments
+eval set -- $queryArguments
 
-# This script currently does not allow modification of the SELECT clause. In particular, the result set is parsed
-# on the ASSUMPTION that the selection is exactly the ACTION_CLAUSE defined here.
-ACTION_CLAUSE=routine_name,routine_definition
-TABLES=information_schema.routines
-WHERE_PRECLAUSE="routine_type='procedure' AND routine_schema='$TQL_DBNAME'"
+# Parse the TQL and generate the SQL
+# Use the query building engine to properly format the WHERE clause.
+# No other clauses are customizable in this script.
+generateWhereClause "$@"; getReturnValue formattedWheres
+WHERE_CLAUSE=$WHERE_PRECLAUSE"$formattedWheres"
+formQuery ${qt[SELECT]} "${g_config[standardColumns]}" "$WHERE_CLAUSE" "$LIMIT"
+getReturnValue fullQuery
 
-g_defaultAlnums=routine_name
-
-# Use the parsing engine to process singletons, lists, regexes, and regex lists of sProc names
-generateWhereClause "" "" "$@"
-getReturnValue parsedWheres
-WHERE_CLAUSE=$WHERE_PRECLAUSE"$parsedWheres"
-
-DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES WHERE $WHERE_CLAUSE"
-
+# Display the query if requested
 isOptionOn "q|query" $OPTIONS
 if (($?)); then
-    echo "$DB_COMMAND"
-    exit 0
+    setError ${rc[SUCCESS]}
+    doExit "$fullQuery"
 fi
 
-# Run the query. Special processing will be necessary because the stored proc bodies can be large and will contain embedded newlines.
-RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND") || exit $?
+# Execute the query
+if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$fullQuery"); then
+    setError $?; doExit "Error running query."
+fi
+
+# Reformat the result set
 
 # Reduce the result set to a simple pair of columns -- the Sproc names and their bodies.
-# (1) Remove the horizontal lines from the result set. (Replaces the slower grep -v.)
+# (1) Remove the horizontal lines
 [[ "$RAW_RESULT" =~ ^[+-]+$'\n'([^+]+)\+[+-]+$'\n'([^+]+)$'\n'\+ ]]
 # (2) Remove the column headers, leaving only the data itself.
 dataRows="${BASH_REMATCH[2]}" # [1] = column hdr   [2] = data rows

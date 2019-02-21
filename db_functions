@@ -73,18 +73,23 @@ function getQueryType()
 function formQuery()
 {
     declare -i queryType=$1
-    local tbls=$2 actionClause=$3 whereClause=$4 limit=$5
+    local actionClause=$2 whereClause=$3 limit=$4
     local fullQuery
+
+    local tables=${g_config[mainTable]}
+    if [[ -n ${g_config[supportingTables]} ]]; then
+        tables+=",${g_config[supportingTables]}"
+    fi
 
     case $queryType in
         ${qt[UPDATE]})
-            fullQuery="UPDATE $tbls $actionClause $whereClause $limit"
+            fullQuery="UPDATE $tables $actionClause $whereClause $limit"
             ;;
         ${qt[DELETE]})
-            fullQuery="DELETE FROM $tbls $whereClause $limit"
+            fullQuery="DELETE FROM $tables $whereClause $limit"
             ;;
         ${qt[SELECT]})
-            fullQuery="SELECT $actionClause FROM $tbls $whereClause $limit"
+            fullQuery="SELECT $actionClause FROM $tables $whereClause $limit"
             ;;
     esac
 
@@ -93,26 +98,19 @@ function formQuery()
 }
 
 ##############################################################################################
-# parseCompletely  standardColumns  tables  mainColumn  wherePreclause  <full sqlUtil cmd line>
-# Wraps up the argument parsing engine in a single function, enabling thinner client scripts
+# parseCompletely  <full command line>
+# Wrapper for the argument parsing and clause generation engines
 # Return code: 0 for select queries, 1 for updates, 10 or greater for errors
 ##############################################################################################
 function parseCompletely()
 {
-    # Values to be set and returned
     local OPTIONS
-    local STANDARD_COLS="$1"
-    local TABLES="$2"
-    local mainColumn="$3"
-    local WHERE_PRECLAUSE="$4"
 
     # Constant ("enumerated") internal error codes
     declare -r retCode_noSelection=0
     declare -r retCode_selectMainColumnOnly=1
     declare -r retCode_clearAllSelections=2
     declare -r retCode_ordinarySelection=3
-
-    shift 4
 
     local remainingArgs
 
@@ -166,11 +164,11 @@ function parseCompletely()
 
     # If required, make special adjustments to the standard column set
     case $retVal in
-        $retCode_clearAllSelections)   STANDARD_COLS="" ;;
-        $retCode_selectMainColumnOnly) STANDARD_COLS=$mainColumn ;;
+        $retCode_clearAllSelections)   g_config[standardColumns]="" ;;
+        $retCode_selectMainColumnOnly) g_config[standardColumns]=${g_config[primaryColumn]} ;;
         *) isOptionOn selectAll $OPTIONS
            if (($?)); then
-               STANDARD_COLS="*"
+               g_config[standardColumns]="*"
            fi ;;
     esac
 
@@ -183,7 +181,7 @@ function parseCompletely()
     isOptionOn "dontExpand|de" $OPTIONS
     if (($?)); then
         # Assemble the full SELECT clause from the three parts without expanding
-        assembleSelectClause "$rawPreselects" "$STANDARD_COLS" "$rawPostselects"
+        assembleSelectClause "$rawPreselects" "${g_config[standardColumns]}" "$rawPostselects"
         getReturnValue ACTION_CLAUSE
 
     else
@@ -225,7 +223,7 @@ function parseCompletely()
             expandSelections "$rawPostselects"; getReturnValue postselects
 
             # Assemble the full SELECT clause from the three parts
-            assembleSelectClause "$preselects" "$STANDARD_COLS" "$postselects"
+            assembleSelectClause "$preselects" "${g_config[standardColumns]}" "$postselects"
             getReturnValue ACTION_CLAUSE
         fi
     fi
@@ -252,13 +250,18 @@ function parseCompletely()
         fi
     fi
 
-    # Make the WHERE clause start with "WHERE"
-    if [[ -n $WHERE_PRECLAUSE ]]; then
-        WHERE_CLAUSE="WHERE $WHERE_CLAUSE"
-    elif [[ -n $WHERE_CLAUSE ]]; then
-        WHERE_CLAUSE="${WHERE_CLAUSE/#$g_mainConjunction/WHERE}"
-    else
-        : # Allow an empty clause for an unconditional query
+    # Complete the WHERE clause:
+    # 1. Add any pre/postclause material
+    local pre=${g_config[wherePreclause]}
+    local post=${g_config[wherePostclause]}
+    WHERE_CLAUSE=$pre$WHERE_CLAUSE
+    if [[ -n $WHERE_CLAUSE && -n $post ]] ; then
+        post=" AND $post"
+    fi
+    WHERE_CLAUSE+=$post
+    # 2. Make the WHERE clause start with "WHERE", except for empty clauses
+    if [[ $WHERE_CLAUSE =~ ^($g_mainConjunction)?(.+) ]]; then
+        WHERE_CLAUSE="WHERE ${BASH_REMATCH[2]}"
     fi
 
     if [[ "$WHERE_CLAUSE" =~ illegalDefault ]]; then
@@ -515,6 +518,7 @@ function isOptionOn()
         fi
         return 1
     else
+        setReturnValue ""
         return 0
     fi
 }
@@ -562,11 +566,10 @@ function loadConfigForTable()
     local tableSection=${BASH_REMATCH[3]}
     # Step 2: remove the trailing content, if any
     if [[ "$tableSection" =~ $'\n'\[.*$ ]]; then
-    #]
+    #]                 # make vim syntax highlighter happy
         if [[ "$tableSection" =~ (.*)"${BASH_REMATCH[0]}"$ ]]; then
             tableSection=${BASH_REMATCH[1]}
         fi
-
     fi
 
     declare -i regexMode=$FALSE regexCount=0
@@ -705,6 +708,7 @@ function loadConfigForTable()
     done
 
     g_config[regexCount]=$regexCount
+    g_config[mainTable]=$tableName
 
     return ${rc[SUCCESS]}
 }
@@ -2027,7 +2031,7 @@ function loadFileAsCommaList()
 function foldResultSet()
 {
     if [[ -z "$1" ]]; then
-        return 0
+        setError ${rc[EMPTY_RESULT_SET]}; return $?
     fi
 
     # Be sensitive to the DOS/Unix line-endings discrepancy

@@ -9,33 +9,27 @@ if ((helpCode)); then
     doExit
 fi
 
-STANDARD_COLS="t.table_name as table_name,column_name,auto_increment"
-TABLES="information_schema.tables t,information_schema.columns c"      # A table join is needed because auto_increment is from t and column_name is from c
-WHERE_PRECLAUSE="t.table_name=c.table_name AND t.table_schema=c.table_schema AND t.table_schema='"$TQL_DBNAME"'"  # TQL_DBNAME uniqifies the result set if there are multiple DBs
-
-g_defaultAlnums=t.table_name
+readMetadataAndConfigure "$1" tables || doExit
 
 # Invoke the main parsing routine to manage cmdline options and different forms of table-name arguments.
-parseCompletely  "$STANDARD_COLS"  "$TABLES"  ""  "$WHERE_PRECLAUSE"  "$@"
-retVal=$?
-if ((retVal >= 10)); then
-    echo Exiting.
-    exit $retVal
-fi
-
-getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions
-
-WHERE_CLAUSE+=" AND c.extra='auto_increment'"
-
-DB_COMMAND="$g_ACTION $ACTION_CLAUSE FROM $TABLES $WHERE_CLAUSE"
+# This script's configuration limits the flexibility of the query.
+parseCompletely "$@" || doExit
+getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions queryType
+formQuery $queryType "${g_config[standardColumns]}" "$WHERE_CLAUSE" ""
+getReturnValue fullQuery
 
 isOptionOn "q|query" $OPTIONS
 if (($?)); then
-    echo "$DB_COMMAND"
-    exit 0
+    setError ${rc[SUCCESS]}
+    doExit "$fullQuery"
 fi
 
-RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND") || exit $?
+# Execute the query
+if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMAND"); then
+    setError $?; doExit "Error running query."
+fi
 
+# Since this is a SELECT query, display the result
 foldResultSet "$RAW_RESULT" "$sortInstructions"
+doExit
 
