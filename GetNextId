@@ -9,7 +9,7 @@ if ((helpCode)); then
     doExit
 fi
 
-readMetadataAndConfigure "$1" tables || doExit
+readMetadataAndConfigure "$0" tables || doExit
 
 # Invoke the main parsing routine to manage cmdline options and different forms of table-name arguments.
 # This script's configuration limits the flexibility of the query.

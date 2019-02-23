@@ -9,7 +9,7 @@ if ((helpCode)); then
     doExit
 fi
 
-readMetadataAndConfigure "$1" tables || doExit
+readMetadataAndConfigure "$0" tables || doExit
 
 # Parse the TQL and generate the SQL
 parseCompletely "$@" || doExit

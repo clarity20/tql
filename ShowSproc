@@ -9,7 +9,7 @@ if ((helpCode)); then
     doExit
 fi
 
-readMetadataAndConfigure "$1" routines || doExit
+readMetadataAndConfigure "$0" routines || doExit
 
 # Extract the option-type arguments
 parseOutOptions "$@"
