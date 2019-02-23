@@ -7,8 +7,7 @@ source $TQL_HOME/db_functions
 source $TQL_HOME/parse_functions
 
 # Populate the master column list
-TQL_SCHEMA_CACHE=$TQL_HOME/testTableData.dat
-loadTableDescription $TQL_SCHEMA_CACHE
+loadTableDescription $TQL_SCHEMA_CACHE/$TQL_DBNAME/table1 #$TQL_HOME/test/testTableData.dat
 #echo "$g_masterColumnList"
 
 setInput "ft=-"; generateWhereClause "$in"; getReturnValue whereClause # AND foot IS NULL
