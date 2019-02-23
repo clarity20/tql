@@ -9,7 +9,12 @@ if ((helpCode)); then
     doExit
 fi
 
-readMetadataAndConfigure "$1" columns || doExit
+parseOutOptions "$@"; getReturnValues OPTIONS queryArguments
+eval set -- $queryArguments
+
+# Initialization: Only read metadata when running in command-line mode
+isOptionOn "dontExpand" $OPTIONS; cmdLineMode=$((! $?)) # 1 cmdline, 0 not
+readMetadataAndConfigure "$0" columns $cmdLineMode || doExit
 
 # Three major steps to prepare the query:
 #
@@ -51,7 +56,7 @@ g_config[defaultAlpha]=column_name
 
 # Parse the TQL and generate the SQL
 parseCompletely "$@" || doExit
-getReturnValues  OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions  queryType
+getReturnValues  _OPTIONS  ACTION_CLAUSE  WHERE_CLAUSE  LIMIT  sortInstructions  queryType
 formQuery $queryType "$ACTION_CLAUSE" "$WHERE_CLAUSE" "$LIMIT"
 getReturnValue fullQuery
 
@@ -73,7 +78,5 @@ if [[ $queryType == ${qt[SELECT]} ]]; then
 fi
 
 # Only dump the execution message (if there is one) in command-line mode
-isOptionOn "dontExpand|de" $OPTIONS
-cmdLineMode=$((! $?))
 [[ $cmdLineMode == $TRUE ]] && doExit || doExit ""
 

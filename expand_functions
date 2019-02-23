@@ -217,6 +217,23 @@ function smartExpandExpression()
     shortNames=("${inputColumnNames[@]}" "${inputSequenceNames[@]}" "${inputFunctionNames[@]}")
     expansionLists=("${columnLists[@]}" "${sequenceLists[@]}" "${functionLists[@]}")
     expansionCount=${#expansionLists[@]}
+
+    # Expressions with no expandables
+    if ((expansionCount == 0)); then
+        # This should happen when the "dontExpand" option is turned on (assuming there are
+        # no function names). Otherwise, hardly at all. "DontExpand" strings will contain
+        # EXPANDED_WORD tokens. These ultimately require an internal type indicator. Based on
+        # the expected usage patterns of the "dontExpand" option, we will make the internal
+        # type a STRING_CONSTANT.
+        while [[ "$expression" =~ ^(.*${tokenDelimiter}[0-9]+${tt[EXPANDED_WORD]})(.*) ]]; do
+            expression=${BASH_REMATCH[1]}${tt[STRING_CONSTANT]}${BASH_REMATCH[2]}
+        done
+
+        # TODO: Consider forcing a tree traversal in order to find transformations for these exprs.
+        setReturnValues "$expression" ""  # 2nd argument = transformation signature
+        return ${rc[SUCCESS]}
+    fi
+
     # Concatenate the token-index lists
     expansionTokenIDs=("${columnTokenIDs[@]}" "${sequenceTokenIDs[@]}" "${functionTokenIDs[@]}")
     # Determine the size of each list
@@ -1073,13 +1090,13 @@ function readSchemaAndConfigure()
 
 function readMetadataAndConfigure()
 {
-    local scriptName=$1 metadataType=$2
+    local scriptName=${1##*/} metadataType=$2 doReadMetadata=${3:-$TRUE}
     local descFile=$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.$metadataType
 
-    # Read the list of objects from the metadata. These will be either the columns, the tables or the routines.
-    # Force an early return on error to prevent infinite loops in "Desc".
-    [[ -r "$descFile" ]] && loadTableDescription "$descFile" \
-        || { setError ${rc[DESCRIPTION_FILE_READ]}; return $?; }
+    if ((doReadMetadata)); then
+        # Read the list of objects from the metadata. These will be either the columns, the tables or the routines.
+        loadTableDescription "$descFile"
+    fi
 
     # Load the script-specific configuration
     local configFile=$TQL_CONFIG_DIR/metadataScripts.cfg    # stored at global level
@@ -1104,7 +1121,11 @@ function loadTableDescription()
 
     # Only query the DB if no cached file is available
     else
-        g_masterColumnList=$(Desc "${tableName:-${scriptName}}" +column_default -dontExpand)      # subshell because we're calling a script, not a function
+        # Reduce the filename to the table name
+        [[ $tableDescFile =~ ([^/]+)(\.columns)?$ ]]
+        local tableName=${BASH_REMATCH[1]}
+        # Subshell-call "Desc," a separate program
+        g_masterColumnList=$(Desc "$tableName" +column_default -dontExpand)
     fi
 }
 

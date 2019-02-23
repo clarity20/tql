@@ -104,8 +104,6 @@ function formQuery()
 ##############################################################################################
 function parseCompletely()
 {
-    local OPTIONS
-
     # Constant ("enumerated") internal error codes
     declare -r retCode_noSelection=0
     declare -r retCode_selectMainColumnOnly=1
@@ -178,7 +176,7 @@ function parseCompletely()
     if (($?)); then g_dbClientOptions+="-N "; fi
 
     # Expand the abbreviated names unless directed otherwise
-    isOptionOn "dontExpand|de" $OPTIONS
+    isOptionOn "dontExpand" $OPTIONS
     if (($?)); then
         # Assemble the full SELECT clause from the three parts without expanding
         assembleSelectClause "$rawPreselects" "${g_config[standardColumns]}" "$rawPostselects"
@@ -703,12 +701,12 @@ function loadConfigForTable()
 
         # Normal variable assignments should be performed literally
         else
-            g_config[$attribute]="$value"
+            eval g_config[\$attribute]=\"$value\"
         fi
     done
 
     g_config[regexCount]=$regexCount
-    g_config[mainTable]=$tableName
+    if [[ -z ${g_config[mainTable]} ]]; then g_config[mainTable]=$tableName; fi
 
     return ${rc[SUCCESS]}
 }
@@ -806,7 +804,7 @@ function parseOutOptions()
     OPTION_LIST+=":"
 
     # Make the options case-agnostic by always storing them in lowercase
-    setReturnValues "${OPTION_LIST,,}" $retArgs
+    setReturnValues "${OPTION_LIST,,}" "$retArgs"
 
     return $retCode
 }
@@ -923,7 +921,7 @@ function parseOutSets()
     SET_CLAUSE=${SET_CLAUSE%,}
     abbrList=${abbrList%,}
 
-    setReturnValues ${SET_CLAUSE:-$placeholderForEmpty} ${abbrList:-$placeholderForEmpty} $retArgs
+    setReturnValues "${SET_CLAUSE:-$placeholderForEmpty}" "${abbrList:-$placeholderForEmpty}" "$retArgs"
 
     return $haveSets
 }
@@ -1040,7 +1038,7 @@ function parseOutSelects()
     PRESELECTION_LIST=${PRESELECTION_LIST%,}
     POSTSELECTION_LIST=${POSTSELECTION_LIST#,}
 
-    setReturnValues ${PRESELECTION_LIST:-$placeholderForEmpty} ${POSTSELECTION_LIST:-$placeholderForEmpty} $retArgs
+    setReturnValues "${PRESELECTION_LIST:-$placeholderForEmpty}" "${POSTSELECTION_LIST:-$placeholderForEmpty}" "$retArgs"
 
     return $retCode
 }
