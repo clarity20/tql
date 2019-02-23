@@ -45,6 +45,10 @@ function parseQueryClause()
     local tokensInNCV="" finalTokenCount currentNcvType currentSide tokenType
     declare -i wasLeftSideModulus=$FALSE
 
+    # Implement the "dontExpand" option while allowing a full parse
+    chooseExpandableWordType
+    getReturnValue expandableWordType
+
     # Preprocess the input string: clean up escape sequences and delimit the NCV subexpressions
     convertEscapeSequences "$inputStream"; getReturnValue inputStream
     if ((isWhereClause)); then
@@ -54,7 +58,6 @@ function parseQueryClause()
     ################################################################################
     # Main processing loop: Pull tokens off the front of the input string one-by-one
     # and create a stream of token descriptors, tokens and some syntax annotations.
-    # There are a few cases where we retroactively edit the stream as we discover new information from the input.
     ################################################################################
 
     while [[ -n $inputStream ]]; do
@@ -103,10 +106,10 @@ function parseQueryClause()
         elif [[ $letter =~ $g_leftParen ]]; then
             ((globalNestingLevel++))
 
-            # If the pending token was marked as a word, it's really a function name and the current parenthesis
-            # is a function parenthesis. We modify the token accordingly (in the pending buffer, where it currently
-            # resides) and stream it with the function paren.
-            if [[ $g_compoundTokenType == ${tt[EXPANDABLE_WORD]} ]]; then
+            # If the pending token was marked as a word (expandable or expanded), it's really a function name
+            # and the current parenthesis is a function parenthesis. We modify the token accordingly
+            # (in the pending buffer, where it currently resides) and stream it with the function paren.
+            if [[ $g_compoundTokenType == $expandableWordType ]]; then
                 ((funcNestingLevel++))
 
                 # Mark the pending token as a function name
@@ -255,7 +258,7 @@ function parseQueryClause()
                     fi
                 else
                     # Mark this as a (possible sequence of) expandable words
-                    bufferToken "$rawToken" ${tt[EXPANDABLE_WORD]}
+                    bufferToken "$rawToken" $expandableWordType
 
                     # Proceed to the next token
                     inputStream=$tmpStream
@@ -576,6 +579,27 @@ function parseQueryClause()
 }
 
 
+#########################################################################################
+# chooseExpandableWordType ()
+# Choose whether to mark words as expandable or already expanded. The former option is
+# the normal one. The latter exists to implement the "dontExpand" option while allowing a full parse.
+#########################################################################################
+function chooseExpandableWordType()
+{
+    local type
+
+    isOptionOn "dontExpand" $OPTIONS
+    if (($?)); then
+        # Mark as already expanded to prevent the expander from trying to expand
+        type=${tt[EXPANDED_TYPE]}
+    else
+        # Mark for expansion; this is the normal case
+        type=${tt[EXPANDABLE_TYPE]}
+    fi
+
+    setReturnValue "$type"
+}
+
 ##################################################################################################
 # advanceStream (stream [,count])
 #
@@ -610,7 +634,7 @@ function processPercentSignToken()
         if [[ $side == $LEFT_SIDE || $wasLeftModulus == $TRUE ]]; then
             # Interpret as 3 tokens: the left side, % as modulus operator, and the right side
             if [[ $leftSide =~ ^[\*[:lower:]][[:alnum:]]*$ ]]; then
-                tokenType=${tt[EXPANDABLE_WORD]}
+                tokenType=$expandableWordType
             else
                 tokenType=${tt[STRING_CONSTANT]}
             fi
@@ -619,7 +643,7 @@ function processPercentSignToken()
             streamToken ${tt[OPERATOR]}${globalNestingLevel}%; appendReturnValue outputStream
 
             if [[ $rightSide =~ ^[\*[:lower:]][[:alnum:]]*$ ]]; then
-                tokenType=${tt[EXPANDABLE_WORD]}
+                tokenType=$expandableWordType
             else
                 tokenType=${tt[STRING_CONSTANT]}
             fi
@@ -946,10 +970,10 @@ function bufferToken()
 
         # Expandable-word indicators go stale once we've determined the token is compound,
         # so change them appropriately.
-        if [[ $initialTokenType == ${tt[EXPANDABLE_WORD]} ]]; then
+        if [[ $initialTokenType == $expandableWordType ]]; then
 
             # A word appended to another word is promoted to a word sequence
-            if [[ $newTokenType == ${tt[EXPANDABLE_WORD]} ]]; then
+            if [[ $newTokenType == $expandableWordType ]]; then
                 updateCompoundTokenType ${tt[EXPANDABLE_SEQUENCE]}
 
             # Anything else would make this a string literal
@@ -961,7 +985,7 @@ function bufferToken()
         elif [[ $initialTokenType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
 
             # The type remains word-sequence if the new piece is a word
-            if [[ $newTokenType == ${tt[EXPANDABLE_WORD]} ]]; then
+            if [[ $newTokenType == $expandableWordType ]]; then
                 :
 
             # Otherwise the token is revealed to be a string literal
