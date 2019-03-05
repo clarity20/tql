@@ -67,7 +67,7 @@ function getQueryType()
 }
 
 ##############################################################################################
-# formQuery
+# formQuery (queryType, actionClause, whereClause, limitClause)
 # Assembles a full query from its pieces based on the query type
 ##############################################################################################
 function formQuery()

@@ -1074,12 +1074,12 @@ function readSchemaAndConfigure()
     local tableName=${1##*/}
 
     # Expand to the full table name given a possibly-abbreviated name
-    loadListOfTables "$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.tables"
+    loadTableNameList "$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.tables"
     getExpandedTableNames $tableName; getReturnValue tableList
     promptForExpansion $tableName "$tableList"; getReturnValue tableName
 
     # Get the list of columns for the table
-    loadTableDescription "$TQL_SCHEMA_CACHE/$TQL_DBNAME/${tableName}.columns"
+    loadColumnNameList "$TQL_SCHEMA_CACHE/$TQL_DBNAME/${tableName}.columns" || return $?
 
     # Load the configuration for the table
     local configFile=$TQL_CONFIG_DIR/${TQL_DBNAME}.cfg    # stored at DB level
@@ -1090,13 +1090,14 @@ function readSchemaAndConfigure()
 
 function readMetadataAndConfigure()
 {
-    local scriptName=${1##*/} metadataType=$2 doReadMetadata=${3:-$TRUE}
-    local descFile=$TQL_SCHEMA_CACHE/$TQL_DBNAME/information_schema.$metadataType
+    local scriptName=${1##*/} metadataType=$2
+    local metadataDesc=information_schema.$metadataType
 
-    if ((doReadMetadata)); then
-        # Read the list of objects from the metadata. These will be either the columns, the tables or the routines.
-        loadTableDescription "$descFile"
-    fi
+    # Read the list of columns describing the metadata. This information pertains
+    # to the db engine (one level above the db level), hence the file is higher in
+    # the subtree. The set of names retrieved will describe the information schema,
+    # not the db, and will pertain to either the columns, the tables, or the routines.
+    loadColumnNameList "$TQL_SCHEMA_CACHE/$metadataDesc" $metadataType || return $?
 
     # Load the script-specific configuration
     local configFile=$TQL_CONFIG_DIR/metadataScripts.cfg    # stored at global level
@@ -1106,12 +1107,12 @@ function readMetadataAndConfigure()
 }
 
 ####################################################################################
-# loadTableDescription
+# load{Table,Column}NameList (fileName [,metadataType])
 # Loads a table's column information from a file (if it exists) or by querying the database
 ####################################################################################
-function loadTableDescription()
+function loadColumnNameList
 {
-    local tableDescFile=$1
+    local tableDescFile=$1 metadataType=$2
 
     # Try to read the table description from a file
     if [[ -f $tableDescFile ]]; then
@@ -1121,15 +1122,29 @@ function loadTableDescription()
 
     # Only query the DB if no cached file is available
     else
-        # Reduce the filename to the table name
-        [[ $tableDescFile =~ ([^/]+)(\.columns)?$ ]]
-        local tableName=${BASH_REMATCH[1]}
-        # Subshell-call "Desc," a separate program
-        g_masterColumnList=$(Desc "$tableName" +column_default -dontExpand)
+        local tableSchema tableName
+        if [[ -n $metadataType ]]; then
+            tableSchema="information_schema"
+            tableName=$metadataType
+        else
+            tableSchema=$TQL_DBNAME
+            tableName=${tableDescFile%.columns}
+        fi
+
+        # Build and execute the "Desc"-like query
+        local query="SELECT table_name, column_name, column_type, column_default "
+        query+="FROM information_schema.columns "
+        query+="WHERE table_schema='"$tableSchema"' AND table_name='"$tableName"'"
+        if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$query"); then
+            setError $? "Error querying for data description."; return $?
+        fi
+        g_masterColumnList=$(foldResultSet "$RAW_RESULT" "$sortInstructions")
     fi
+
+    return ${rc[SUCCESS]}
 }
 
-function loadListOfTables()
+function loadTableNameList()
 {
     local tableListFile=$1
 

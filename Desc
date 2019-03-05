@@ -12,9 +12,8 @@ fi
 parseOutOptions "$@"; getReturnValues OPTIONS queryArguments
 eval set -- $queryArguments
 
-# Initialization: Only read metadata when running in command-line mode
-isOptionOn "dontExpand" $OPTIONS; cmdLineMode=$((! $?)) # 1 cmdline, 0 not
-readMetadataAndConfigure "$0" columns $cmdLineMode || doExit
+# Initialization
+readMetadataAndConfigure "$0" columns || doExit
 
 # Three major steps to prepare the query:
 #
@@ -77,6 +76,5 @@ if [[ $queryType == ${qt[SELECT]} ]]; then
     foldResultSet "$RAW_RESULT" "$sortInstructions"
 fi
 
-# Only dump the execution message (if there is one) in command-line mode
-[[ $cmdLineMode == $TRUE ]] && doExit || doExit ""
+doExit
 
