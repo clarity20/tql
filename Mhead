@@ -63,7 +63,8 @@ for line in ${RAW_RESULT[*]}; do
 
         # Pretty-print the table
         ((linesInTable=lineCount-tableStartLine+1))
-        foldResultSet "${RAW_RESULT[*]:$tableStartLine:$linesInTable}"
+        formatResultSet "${RAW_RESULT[*]:$tableStartLine:$linesInTable}"; getReturnValue formattedResult
+        echo "$formattedResult"
 
         separatorCount=0
     fi

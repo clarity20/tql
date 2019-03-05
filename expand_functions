@@ -1091,13 +1091,12 @@ function readSchemaAndConfigure()
 function readMetadataAndConfigure()
 {
     local scriptName=${1##*/} metadataType=$2
-    local metadataDesc=information_schema.$metadataType
 
     # Read the list of columns describing the metadata. This information pertains
-    # to the db engine (one level above the db level), hence the file is higher in
-    # the subtree. The set of names retrieved will describe the information schema,
-    # not the db, and will pertain to either the columns, the tables, or the routines.
-    loadColumnNameList "$TQL_SCHEMA_CACHE/$metadataDesc" $metadataType || return $?
+    # to the db engine, not to any single db, so we store the data file higher in
+    # the subtree. The set of names retrieved will describe an aspect of
+    # the information schema such as the columns, the tables, or the routines.
+    loadColumnNameList "$TQL_SCHEMA_CACHE/$metadataType" $metadataType || return $?
 
     # Load the script-specific configuration
     local configFile=$TQL_CONFIG_DIR/metadataScripts.cfg    # stored at global level
@@ -1138,7 +1137,8 @@ function loadColumnNameList
         if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$query"); then
             setError $? "Error querying for data description."; return $?
         fi
-        g_masterColumnList=$(foldResultSet "$RAW_RESULT" "$sortInstructions")
+        formatResultSet "$RAW_RESULT" "$sortInstructions" $FALSE
+        getReturnValue g_masterColumnList
     fi
 
     return ${rc[SUCCESS]}
@@ -1153,8 +1153,16 @@ function loadTableNameList()
         OLDFS=$IFS; IFS=$'\n' g_masterTableList="${MAPFILE[*]}"
         IFS=$OLDFS
     else
-        g_masterTableList=$(FindTable "%")
+        local query="SELECT table_name FROM information_schema.tables "
+        query+="WHERE table_schema='"$TQL_DBNAME"'"
+        if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$query"); then
+            setError $? "Error querying for table list."; return $?
+        fi
+        formatResultSet "$RAW_RESULT" "$sortInstructions" $FALSE
+        getReturnValue g_masterTableList
     fi
+
+    return ${rc[SUCCESS]}
 }
 
 #####################################################################################################

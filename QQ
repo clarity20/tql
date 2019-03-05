@@ -37,7 +37,8 @@ fi
 
 # For SELECT queries, display the result set
 if [[ $queryType == ${qt[SELECT]} ]]; then
-    foldResultSet "$RAW_RESULT" "$sortInstructions"
+    formatResultSet "$RAW_RESULT" "$sortInstructions"; getReturnValue formattedResult
+    echo "$formattedResult"
 fi
 doExit
 

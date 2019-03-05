@@ -251,6 +251,7 @@ function parseCompletely()
     # Complete the WHERE clause:
     # 1. Add any pre/postclause material
     local pre=${g_config[wherePreclause]}
+    if [[ -n $pre ]]; then pre+=" "; fi
     local post=${g_config[wherePostclause]}
     WHERE_CLAUSE=$pre$WHERE_CLAUSE
     if [[ -n $WHERE_CLAUSE && -n $post ]] ; then
@@ -761,11 +762,7 @@ function swapValueParameterToFront()
 function parseOutOptions()
 {
     local OPTION_LIST retArgs retCode
-    local optionsRegex="(^| )(-|[*]( |$))"
     local arg nextArg
-
-    # Quick return if there are no options
-    if [[ ! "$@" =~ $optionsRegex ]]; then return 0; fi
 
     for ((idx=1; idx<=$#; idx++)); do
         eval arg=\$$idx      # value of the idx-th argument ($idx is just the index number)
@@ -951,10 +948,6 @@ function parseOutSelects()
 
     local zeroInListRegex="(^|,)(00?)($|,)"     # a single or double zero within a comma-separated list
     local groupNameRegex="^\+"              # begins with literal "+".
-    local selectionsRegex="(^| )\+"
-
-    # Quickly return if there are no selection-type args
-    if [[ ! "$@" =~ $selectionsRegex ]]; then return 0; fi
 
     for ((idx=1; idx<=$#; idx++)); do
         eval arg=\$$idx      # value of the idx-th argument ($idx is just the index number)
@@ -2008,26 +2001,24 @@ function loadFileAsCommaList()
 }
 
 ############################################################################
-# foldResultSet
-# Word-wrap a result set to print nicely on the screen and display
-# the first (presumably "key") column with each wrapped section
-#
-# Syntax: foldResultSet  rawResultSet  [selectClause  sortInstructions]
-#         where sortInstructions has the form columnsToSortBy:valuesToSortBy
+# formatResultSet ( rawResultSet  [ sortInstructions  [allowFolding] ] )
+#   - rawResultSet has the tabular format provided by mysql's "-t" option:
+#     header first then data, surrounded in boxes
+#   - sortInstructions has the form columnsToSortBy:valuesToSortBy
 #     and if either side is blank, both bracketed args above are ignored
+#   - allowFolding defaults to $TRUE
 #
-# Assumptions: The string passed in is a result set in tabular format
-#     (e.g. mysql's "-t" option) complete with ascii-art boxes. The
-#     topmost row is the column header and the rest contain the results.
-#
-# NOTE: For a truly perfect implementation, the running of the query and
-# subsequent management of the result set should be done in perl, which can
-# handle arbitrary characters in the data. Here we rely on some simplified
-# parsing which does not work on the arbitrary "blob", for instance. Maybe someday
-# this will be rewritten in perl.
+# Word-wrap a result set (if necessary) to print nicely on the screen
+# and display the primary column at the front of each wrapped section.
+# Although we strip the header and box from the final output, they provide
+# useful information to mitigate against the difficulties of working with
+# result sets in the shell.
 ############################################################################
-function foldResultSet()
+function formatResultSet()
 {
+    local sortInstructions=$2 finalResult=""
+    declare -i allowFolding=${3:-$TRUE}
+
     if [[ -z "$1" ]]; then
         setError ${rc[EMPTY_RESULT_SET]}; return $?
     fi
@@ -2054,28 +2045,26 @@ function foldResultSet()
 
     # Corner case: embedded newlines in result data
     if [[ "$resultSet" =~ [^|+]${newLine} ]]; then   # look for a newline not preceded by the usual characters
-        echo "******************************************************" > /dev/stderr
-        echo  Embedded newlines detected in result set, cannot fold. > /dev/stderr
-        echo "******************************************************" > /dev/stderr
-        FOLDED_RESULT="$resultSet"
-        echo "${FOLDED_RESULT//|/}"
-        return 0
+        # TODO: pretty-print the section(s) with extra newlines
+        finalResult="${resultSet//|/}"
+        setReturnValue "$finalResult"
+        return ${rc[SUCCESS]}
     fi
 
     # Before folding, pre-sort the result set if a sort is needed
     # TODO Work in progress...
-    if [[ "$3" =~ ^[a-z] ]]; then
+    if [[ "$sortInstructions" =~ ^[a-z] ]]; then
         :
     fi
 
 #    local foldedWidth=$((COLUMNS-KEY_WIDTH))
 #    if ((foldedWidth < 1)); then
-    if ((resultWidth < COLUMNS)); then
-        # No folding needed, the result is narrow enough for the screen
+    if ((resultWidth < COLUMNS || allowFolding == FALSE)); then
+        # Do not fold; the result is narrow enough for the screen or the caller has turned folding off
         # TODO If we've monkeyed with the column ordering of the result set for the reasons below, we need to clean up the monkeying before setting FOLDED_RESULT here.
-        FOLDED_RESULT="$resultSet"
-        echo "${FOLDED_RESULT//|/}"
-        return 0
+        finalResult="${resultSet//|/}"
+        setReturnValue "$finalResult"
+        return ${rc[SUCCESS]}
     else
 
         # Determine the width of the "key" column.
@@ -2134,19 +2123,19 @@ function foldResultSet()
     for ((phaseShift=0; phaseShift<$numSections; phaseShift++)); do
 
         # Print key header and column header
-        echo "${KEY_ARR[0]}""${FOLDED_ARR[$phaseShift]//|/}"
+        finalResult+="${KEY_ARR[0]}${FOLDED_ARR[$phaseShift]//|/}$newLine"
 
         # Print all following key rows and result rows plus a blank line
         currentLine=$phaseShift
         for ((lineIdx=1; lineIdx<$numRawLines; lineIdx++)); do
             ((currentLine+=numSections))
-            echo "${KEY_ARR[lineIdx]}""${FOLDED_ARR[$currentLine]//|/}"
+            finalResult+="${KEY_ARR[lineIdx]}${FOLDED_ARR[$currentLine]//|/$newLine}"
         done
-        echo
+        finalResult+=$newLine
     done
 
-    # Return the "key column" as a single row vector
-    # echo ${KEY_ARR[@]}
+    setReturnValue "$finalResult"
+    return ${rc[SUCCESS]}
 }
 
 

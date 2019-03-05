@@ -68,12 +68,14 @@ fi
 
 # Execute the query
 if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$fullQuery"); then
-    setError $?; doExit "Error running query."
+    setError $?
+    doExit "Error running query."
 fi
 
 # For SELECT queries, display the result set
 if [[ $queryType == ${qt[SELECT]} ]]; then
-    foldResultSet "$RAW_RESULT" "$sortInstructions"
+    formatResultSet "$RAW_RESULT" "$sortInstructions"; getReturnValue formattedResult
+    echo "$formattedResult"
 fi
 
 doExit

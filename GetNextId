@@ -30,6 +30,7 @@ if ! RAW_RESULT=$("${TQL_DB_WRAPPER:-mysql}" $g_dbClientOptions -t -e "$DB_COMMA
 fi
 
 # Since this is a SELECT query, display the result
-foldResultSet "$RAW_RESULT" "$sortInstructions"
+formatResultSet "$RAW_RESULT" "$sortInstructions"; getReturnValue formattedResult
+echo "$formattedResult"
 doExit
 
