@@ -54,7 +54,7 @@ g_operatorStrength=(
 # we blanket-permit every form in which both types are the same.
 # Finally, for native-type RHS we list only the LHS types as this is enough information.
 declare -a g_compTypeResolutions g_nativeTypeResolutions
-declare -r regex_equalOrNot="^(\!?=|<=?>)$"      # will match any of  !=  =  <>  <=>
+declare -r regex_equalOrNot="(\!?=|<=?>)"      # will match any of  !=  =  <>  <=>
 g_compTypeResolutions=(
 "${tt[INTEGER]}${regex_equalOrNot}${tt[INT_LIST]}"
 "${tt[INTEGER]}${regex_equalOrNot}${tt[FLOAT_LIST]}"
@@ -195,7 +195,7 @@ function smartExpandExpression()
             # Column name abbreviation
             columnTokenIDs[columnCount]=$tokenNumber
             inputColumnNames[columnCount]=$currentAbbr
-            getExpandedColumnNames "$MAIN_TABLE" $currentAbbr; getReturnValue columnLists[columnCount]
+            getExpandedColumnNames "${g_config[mainTable]}" $currentAbbr; getReturnValue columnLists[columnCount]
             ((columnCount++))
         elif [[ $expansionType == ${tt[EXPANDABLE_SEQUENCE]} ]]; then
             # Abbreviated word sequence
@@ -208,7 +208,7 @@ function smartExpandExpression()
             functionTokenIDs[functionCount]=$tokenNumber
             inputFunctionNames[functionCount]=$currentAbbr
 #MMMM Needs finishing:
-            getExpandedFunctionNames "$MAIN_TABLE" $currentAbbr; getReturnValue functionLists[functionCount]
+            getExpandedFunctionNames "${g_config[mainTable]}" $currentAbbr; getReturnValue functionLists[functionCount]
             ((functionCount++))
         fi
     done

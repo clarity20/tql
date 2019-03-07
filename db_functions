@@ -186,7 +186,7 @@ function parseCompletely()
         if [[ $queryType == ${qt[UPDATE]} ]]; then
             # Expand the SET clause column names and finish off the clause itself
 #MMMM Address the side effect of reworking expand():
-            expandColumnNames "$MAIN_TABLE" "$setAbbrs"
+            expandColumnNames "${g_config[mainTable]}" "$setAbbrs"
             getReturnValue setCols setCodes
             OLDFS="$IFS"; IFS=$',' expandedSetCols=(${setCols})
 
@@ -1672,9 +1672,9 @@ function valueListToSQL()
 
     # Construct the final piece of SQL
     if [[ $hasNull == $TRUE ]]; then
-        output+="$currentName IN ($values) OR $currentName IS NULL"
+        output+="IN ($values) OR $currentName IS NULL "
     else
-        output+="$currentName IN ($values)"
+        output+="IN ($values) "
     fi
 
     setReturnValue "$output"

@@ -337,8 +337,9 @@ function parseQueryClause()
             local tmpToken=${BASH_REMATCH[1]}
             local tmpStream=${BASH_REMATCH[2]}
 
-            # Only proceed if the first part has something non-digital.
-            if [[ $tmpToken =~ [^[:digit:]] ]]; then
+            # Before proceeding, rule out numbers and numeric lists.
+            if [[ $tmpToken =~ [^[:digit:].,] ]]; then
+
                 # Strip off the leading part
                 rawToken+=$tmpToken
                 inputStream=$tmpStream
@@ -591,10 +592,10 @@ function chooseExpandableWordType()
     isOptionOn "dontExpand" $OPTIONS
     if (($?)); then
         # Mark as already expanded to prevent the expander from trying to expand
-        type=${tt[EXPANDED_TYPE]}
+        type=${tt[EXPANDED_WORD]}
     else
         # Mark for expansion; this is the normal case
-        type=${tt[EXPANDABLE_TYPE]}
+        type=${tt[EXPANDABLE_WORD]}
     fi
 
     setReturnValue "$type"
