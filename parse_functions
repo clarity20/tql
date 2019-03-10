@@ -368,7 +368,7 @@ function parseQueryClause()
         # Numeric- and date-like values
         if [[ $inputStream =~ ^([-]?([0-9]*\.)?[0-9]+)(.*) ]]; then      # will capture the leading int or float of numeric/date-like values
             local oldInputStream=$inputStream
-            local value=${BASH_REMATCH[1]}
+            local valueBuffer=${BASH_REMATCH[1]}
             inputStream=${BASH_REMATCH[3]}
 
             # First character beyond the initial number tells us a lot about the full extent of the value
@@ -378,19 +378,19 @@ function parseQueryClause()
             case $nextChar in
               ,) # function argument or numeric list
                 if ((funcNestingLevel > 0)); then
-                    if [[ $value =~ \. ]]; then
-                        streamToken ${tt[DECIMAL]}$value; appendReturnValue outputStream
+                    if [[ $valueBuffer =~ \. ]]; then
+                        streamToken ${tt[DECIMAL]}$valueBuffer; appendReturnValue outputStream
                     else
-                        streamToken ${tt[INTEGER]}$value; appendReturnValue outputStream
+                        streamToken ${tt[INTEGER]}$valueBuffer; appendReturnValue outputStream
                     fi
                 else
                     [[ $inputStream =~ ^$nextChar([-0-9,.]+)(.*) ]]    # NOTE: We could specify more precisely where negative signs may be placed
-                    value+=$nextChar${BASH_REMATCH[1]}
+                    valueBuffer+=$nextChar${BASH_REMATCH[1]}
                     inputStream=${BASH_REMATCH[2]}
-                    if [[ $value =~ \. ]]; then
-                        streamToken ${tt[FLOAT_LIST]}$value; appendReturnValue outputStream
+                    if [[ $valueBuffer =~ \. ]]; then
+                        streamToken ${tt[FLOAT_LIST]}$valueBuffer; appendReturnValue outputStream
                     else
-                        streamToken ${tt[INT_LIST]}$value; appendReturnValue outputStream
+                        streamToken ${tt[INT_LIST]}$valueBuffer; appendReturnValue outputStream
                     fi
                 fi
                 ;;
@@ -414,8 +414,8 @@ function parseQueryClause()
 
                         # A slash therein indicates a date range; stream it as such
                         if [[ $followingPart =~ / ]]; then
-                            value=$startingDate$followingPart
-                            streamToken ${tt[DATE_RANGE]}$value; appendReturnValue outputStream
+                            valueBuffer=$startingDate$followingPart
+                            streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
 
                         # No slash; only digits means we must decide: date range or date subtraction?
                         elif [[ $followingPart =~ [0-9] ]]; then
@@ -424,12 +424,12 @@ function parseQueryClause()
                             local number2=${followingPart#-}
                             if ((number2<=31 && number2>number1)); then
                                 # Treat it as a date range
-                                value=$startingDate$followingPart
-                                streamToken ${tt[DATE_RANGE]}$value; appendReturnValue outputStream
+                                valueBuffer=$startingDate$followingPart
+                                streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
                             else
                                 # Treat it as a date subtraction. Create three tokens.
-                                value=$startingDate
-                                streamToken ${tt[DATE]}$value ${tt[OPERATOR]}${globalNestingLevel}- ${tt[INTEGER]}$number2; appendReturnValue outputStream
+                                valueBuffer=$startingDate
+                                streamToken ${tt[DATE]}$valueBuffer ${tt[OPERATOR]}${globalNestingLevel}- ${tt[INTEGER]}$number2; appendReturnValue outputStream
                             fi
                         # other stuff after minus sign --> error
                         else
@@ -438,9 +438,9 @@ function parseQueryClause()
                         fi
                     else
                         # No trailing minus sign. It's a plain old date.
-                        value=$startingDate$followingPart
+                        valueBuffer=$startingDate$followingPart
                         inputStream=$followingPart
-                        streamToken ${tt[DATE]}$value; appendReturnValue outputStream
+                        streamToken ${tt[DATE]}$valueBuffer; appendReturnValue outputStream
                     fi
                 # Now we deal with tokens that begin yyyy/mm. We interpret these as either date ranges or arithmetic. (Is that the best way?)
                 elif [[ $oldInputStream =~ ^([0-9]{4}/[0-9]{1,2})(.*) ]]; then
@@ -451,8 +451,8 @@ function parseQueryClause()
                         [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
                         followingPart=${BASH_REMATCH[1]}
                         inputStream=${BASH_REMATCH[2]}
-                        value=$startingDate$followingPart
-                        streamToken ${tt[DATE_RANGE]}$value; appendReturnValue outputStream
+                        valueBuffer=$startingDate$followingPart
+                        streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
                     else
                         # Treat it as arithmetic.
                         inputStream=$followingPart
@@ -469,50 +469,49 @@ function parseQueryClause()
               :) # prefix list
                  #TODO Accommodate a range set (in the future), whose inputStream would be approximately ^:[0-9,:;-]+
                 [[ $inputStream =~ ^$nextChar([0-9,]+)(.*) ]]
-                value+=$nextChar${BASH_REMATCH[1]}
+                valueBuffer+=$nextChar${BASH_REMATCH[1]}
                 inputStream=${BASH_REMATCH[2]}
-                streamToken ${tt[PREFIX_LIST]}$value; appendReturnValue outputStream
+                streamToken ${tt[PREFIX_LIST]}$valueBuffer; appendReturnValue outputStream
                 ;;
               -) # date, numeric range or subtraction operator
                 oldInputStream=$inputStream
                 # Check for a date.
                 if [[ $oldInputStream =~ ^([0-9]{4}-[0-9]{1,2}-[0-9]{1,2})(.*) ]]; then
-                    value=${BASH_REMATCH[1]}
+                    valueBuffer=${BASH_REMATCH[1]}
                     inputStream=${BASH_REMATCH[2]}
-                    streamToken ${tt[DATE]}$value; appendReturnValue outputStream
+                    streamToken ${tt[DATE]}$valueBuffer; appendReturnValue outputStream
                 else
                     # Not a date. Either a numeric range or arithmetic.
-                    #TODO Recognize solitary NULLs
                     [[ $inputStream =~ ^$nextChar([0-9]*)(.*) ]]
-                    following=${BASH_REMATCH[1]}
+                    followingNumber=${BASH_REMATCH[1]}
                     ending=${BASH_REMATCH[2]}
-                    if [[ -n $following ]]; then
+                    if [[ -n $followingNumber ]]; then
                         # There are some following digits. In deciding what to do, we venture into semantic analysis to observe that
                         # a numeric range is only valid when it occurs as the sole token after a comparator (in the given NCV construct).
                         # We assume that it's not an integer subtraction, by the "Contrapositive of Occam's razor" discussed elsewhere.
                         # The logic: if "nothing ahead, i.e. empty or closeParen" and "comparator-or-nothing behind" ...
                         if [[ (-z $ending || "$ending" =~ ^\ ?$g_rightParen) && ($outputStream =~ ([\<\>=]|${tt[BEGIN_NCV]}[0-9]+${tokenDelimiter})$) ]]; then
                             # numeric range
-                            value+=$nextChar$following
+                            valueBuffer+=$nextChar$followingNumber
                             inputStream=$ending
-                            streamToken ${tt[INT_RANGE]}$value; appendReturnValue outputStream
+                            streamToken ${tt[INT_RANGE]}$valueBuffer; appendReturnValue outputStream
                         else
                             # arithmetic subtraction     # TODO What about arithmetic negation?
-                            inputStream=$following$ending    # remove leading minus sign
-                            streamToken ${tt[INTEGER]}$value ${tt[OPERATOR]}${globalNestingLevel}'-'; appendReturnValue outputStream
+                            inputStream=$followingNumber$ending    # remove leading minus sign
+                            streamToken ${tt[INTEGER]}$valueBuffer ${tt[OPERATOR]}${globalNestingLevel}'-'; appendReturnValue outputStream
                         fi
                     else
                         # There are no following digits (perhaps a name/word follows)
-                        inputStream=$following$ending
-                        streamToken ${tt[INTEGER]}$value ${tt[OPERATOR]}${globalNestingLevel}'-'; appendReturnValue outputStream
+                        inputStream=$followingNumber$ending
+                        streamToken ${tt[INTEGER]}$valueBuffer ${tt[OPERATOR]}${globalNestingLevel}'-'; appendReturnValue outputStream
                     fi
                 fi
                 ;;
               *) # Anything else means it is a single int or float. Buffer it because it could turn out to be a "123 Main St".
-                if [[ $value =~ \. ]]; then
-                    bufferToken "$value" ${tt[DECIMAL]}
+                if [[ $valueBuffer =~ \. ]]; then
+                    bufferToken "$valueBuffer" ${tt[DECIMAL]}
                 else
-                    bufferToken "$value" ${tt[INTEGER]}
+                    bufferToken "$valueBuffer" ${tt[INTEGER]}
                 fi
                 ;;
             esac
