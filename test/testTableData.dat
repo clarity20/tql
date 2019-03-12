@@ -8,4 +8,5 @@
              matchSeta    int           
              matchSetb    char          
              matchSetc    char          
-
+             actionDate   date         NULL
+             actionTime   time         NULL

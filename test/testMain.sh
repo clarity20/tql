@@ -29,7 +29,22 @@ loadConfigForTable $TQL_CONFIG_DIR/${TQL_DBNAME}.cfg table1
 #setInput "ft=2"; generateWhereClause "$in"    # WHERE (foot = 2)
 #setInput "ft<>2"; generateWhereClause "$in" && getReturnValue whereClause  # AND ( NOT ( foot = 2 ) )
 #useIntuitiveNulls "$whereClause"   # AND ( NOT ( foot = 2 ) OR foot IS NULL )
-setInput "ft=1,4,8"; generateWhereClause "$in"    # WHERE foot IN (1,4,8)
+#setInput "ft=1,4,8"; generateWhereClause "$in"    # WHERE foot IN (1,4,8)
+#setInput "ft=1000-7"; generateWhereClause "$in"    # WHERE foot BETWEEN 1000 AND 1007
+#setInput "ft=100:0,3,6,7"; generateWhereClause "$in"    # WHERE foot IN (1000,1003,1006,1007)
+# Grammar check - deliberate type mismatch:
+#setInput "ft=10:03"; generateWhereClause "$in"    # Illegal grammar / no feasible interpretation for 'ft=10:03'.
+setInput "acT=10:03"; generateWhereClause "$in"    # WHERE activationTime = '10:03:00'
+#setInput "acT=10:03:46.7"; generateWhereClause "$in"    # WHERE foot = '10:03:46.7'
+#setInput "ft=@test/testNumbers1.in@"; generateWhereClause "$in"    # WHERE foot IN (1000,2000,3000,4000,5000)
+#setInput "ft=@@"; generateWhereClause "$in"    # WHERE foot IN (1000,2000,3000,4000,5000)
+#setInput "acD=@@"; generateWhereClause "$in"    # WHERE actionDate IN ('2019-01-10','2019-02-1#5')
+#setInput "acD=2009-6-20"; generateWhereClause "$in"    # WHERE actionDate = '2009-6-20'
+#setInput "acD=2009/6/20"; generateWhereClause "$in"    # WHERE actionDate = '2009-6-20'
+#setInput "acD=2009/6/20-2011/4/30"; generateWhereClause "$in"    # WHERE actionDate BETWEEN '2009-6-20' AND '2011-4-30'
+#setInput "acD=2009/6/20-30"; generateWhereClause "$in"    # WHERE actionDate BETWEEN '2009-6-20' AND '2009-6-30'
+#setInput "acD=2009/6/20-7/30"; generateWhereClause "$in"    # WHERE actionDate BETWEEN '2009-6-20' AND '2009-7-30'
+#setInput "acD=2009/6-7"; generateWhereClause "$in"    # WHERE actionDate BETWEEN '2009-6-1' AND '2009-7-31'
 doExit
 
 
