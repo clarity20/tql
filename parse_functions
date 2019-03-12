@@ -369,11 +369,10 @@ function parseQueryClause()
         if [[ $inputStream =~ ^([-]?([0-9]*\.)?[0-9]+)(.*) ]]; then      # will capture the leading int or float of numeric/date-like values
             local oldInputStream=$inputStream
             local valueBuffer=${BASH_REMATCH[1]}
-            inputStream=${BASH_REMATCH[3]}
+            advanceStream "$inputStream" "$valueBuffer" $TRUE; getReturnValue inputStream
 
             # First character beyond the initial number tells us a lot about the full extent of the value
             local nextChar=${inputStream:0:1}
-            local following ending
 
             case $nextChar in
               ,) # function argument or numeric list
@@ -410,18 +409,18 @@ function parseQueryClause()
                         # Grab the numeric-or-date part after the minus sign
                         [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
                         followingPart=${BASH_REMATCH[1]}
-                        inputStream=${BASH_REMATCH[2]}
+                        inputStream=${BASH_REMATCH[2]}   # set, don't "advance" because it is not the source stream
 
                         # A slash therein indicates a date range; stream it as such
                         if [[ $followingPart =~ / ]]; then
                             valueBuffer=$startingDate$followingPart
                             streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
 
-                        # No slash; only digits means we must decide: date range or date subtraction?
+                        # No slash, only digits means it is either a date range or a date subtraction
                         elif [[ $followingPart =~ [0-9] ]]; then
                             # We analyze the numbers surrounding the minus sign
-                            local number1=${startingDate##*/}
-                            local number2=${followingPart#-}
+                            declare -i number1=${startingDate##*/}
+                            declare -i number2=${followingPart#-}
                             if ((number2<=31 && number2>number1)); then
                                 # Treat it as a date range
                                 valueBuffer=$startingDate$followingPart
@@ -433,66 +432,86 @@ function parseQueryClause()
                             fi
                         # other stuff after minus sign --> error
                         else
-                            echo Invalid date expression. > /dev/stderr
-                            return 2
+                            setError ${rc[INVALID_DATE]}; return $?
                         fi
                     else
                         # No trailing minus sign. It's a plain old date.
-                        valueBuffer=$startingDate$followingPart
-                        inputStream=$followingPart
+                        valueBuffer=${startingDate//\//-}
+                        inputStream=$followingPart   # set, don't "advance" because it is not the source stream
                         streamToken ${tt[DATE]}$valueBuffer; appendReturnValue outputStream
                     fi
-                # Now we deal with tokens that begin yyyy/mm. We interpret these as either date ranges or arithmetic. (Is that the best way?)
+                # Process tokens that begin yyyy/mm. We interpret these as either date ranges or arithmetic.
                 elif [[ $oldInputStream =~ ^([0-9]{4}/[0-9]{1,2})(.*) ]]; then
                     startingDate=${BASH_REMATCH[1]}
                     followingPart=${BASH_REMATCH[2]}
                     if [[ $followingPart =~ ^- ]]; then
                         # Grab the date part after the minus sign
-                        [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
+                        [[ $followingPart =~ ^-([/0-9]+)(.*) ]]
                         followingPart=${BASH_REMATCH[1]}
-                        inputStream=${BASH_REMATCH[2]}
-                        valueBuffer=$startingDate$followingPart
+                        inputStream=${BASH_REMATCH[2]}   # set, don't "advance"
+                        valueBuffer=$startingDate"-"$followingPart
                         streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
                     else
                         # Treat it as arithmetic.
-                        inputStream=$followingPart
+                        inputStream=$followingPart   # set, don't "advance"
                         streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}${globalNestingLevel}'/' ${tt[INTEGER]}${startingDate:5}; appendReturnValue outputStream
                     fi
-                # Finally we deal with other tokens, where the successive runs of digits do NOT suggest a date. We treat it as arithmetic.
+                # Process tokens where the leading digits are clearly a number, NOT the beginning of a date
                 else
-                    # (Merge with the code immediately above!)
-                    inputStream=$followingPart
-                    streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}${globalNestingLevel}'/' ${tt[INTEGER]}${startingDate:5}; appendReturnValue outputStream
+                    streamToken ${tt[INTEGER]}$valueBuffer; appendReturnValue outputStream
                 fi
                 # This concludes the '/' processing.
                 ;;
-              :) # prefix list
+              :) # time value or prefix list
                  #TODO Accommodate a range set (in the future), whose inputStream would be approximately ^:[0-9,:;-]+
-                [[ $inputStream =~ ^$nextChar([0-9,]+)(.*) ]]
-                valueBuffer+=$nextChar${BASH_REMATCH[1]}
-                inputStream=${BASH_REMATCH[2]}
-                streamToken ${tt[PREFIX_LIST]}$valueBuffer; appendReturnValue outputStream
+                [[ $inputStream =~ ^:([0-9,]+) ]]
+                local suffix=${BASH_REMATCH[1]}
+                declare -i prefix=$valueBuffer
+                advanceStream "$inputStream" ":"$suffix; getReturnValue inputStream
+
+                # Discriminate between time values and prefix lists by analyzing the suffix
+                if [[ $suffix =~ ^[0-5][0-9]$ ]]; then
+                    # Parse out the seconds (if present), allowing decimal values
+                    if [[ $inputStream =~ ^:([0-9]+(.[0-9]+)?) ]]; then
+                        local seconds=${BASH_REMATCH[1]}
+                        valueBuffer+=":"$suffix":"$seconds
+                        # Advance past the seconds
+                        advanceStream "$inputStream" ":"$seconds; getReturnValue inputStream
+                    else
+                        valueBuffer+=":"$suffix
+                    fi
+                    streamToken ${tt[TIME]}$valueBuffer; appendReturnValue outputStream
+                else
+                    # A prefix list, not a time value
+                    valueBuffer+=":"$suffix
+                    streamToken ${tt[PREFIX_LIST]}$valueBuffer; appendReturnValue outputStream
+                fi
                 ;;
               -) # date, numeric range or subtraction operator
+                local followingNumber ending
                 oldInputStream=$inputStream
                 # Check for a date.
-                if [[ $oldInputStream =~ ^([0-9]{4}-[0-9]{1,2}-[0-9]{1,2})(.*) ]]; then
-                    valueBuffer=${BASH_REMATCH[1]}
+                if [[ ( $valueBuffer =~ ^[0-9]{4}$ ) && ( $oldInputStream =~ ^(-[0-9]{1,2}-[0-9]{1,2})(.*) ) ]]; then
+                    valueBuffer+=${BASH_REMATCH[1]}
                     inputStream=${BASH_REMATCH[2]}
                     streamToken ${tt[DATE]}$valueBuffer; appendReturnValue outputStream
                 else
                     # Not a date. Either a numeric range or arithmetic.
-                    [[ $inputStream =~ ^$nextChar([0-9]*)(.*) ]]
+                    [[ $inputStream =~ ^-([0-9]*)(.*) ]]
                     followingNumber=${BASH_REMATCH[1]}
                     ending=${BASH_REMATCH[2]}
                     if [[ -n $followingNumber ]]; then
-                        # There are some following digits. In deciding what to do, we venture into semantic analysis to observe that
-                        # a numeric range is only valid when it occurs as the sole token after a comparator (in the given NCV construct).
-                        # We assume that it's not an integer subtraction, by the "Contrapositive of Occam's razor" discussed elsewhere.
-                        # The logic: if "nothing ahead, i.e. empty or closeParen" and "comparator-or-nothing behind" ...
-                        if [[ (-z $ending || "$ending" =~ ^\ ?$g_rightParen) && ($outputStream =~ ([\<\>=]|${tt[BEGIN_NCV]}[0-9]+${tokenDelimiter})$) ]]; then
+                        # There are some following digits. We appeal to the observation that a numeric range is only valid
+                        # when it occurs as the sole token after a comparator (in the given NCV construct). We assume
+                        # that it's not an integer subtraction, by the "Contrapositive of Occam's razor" discussed elsewhere.
+
+                        # First reduce the "ending" to the current NCV without the NCV-ending markup
+                        [[ $ending =~ ^([^$tokenDelimiter]|$tokenDelimiter[^$g_ncvTypeMarkers])* ]]
+                        local ncvEnding=${BASH_REMATCH[1]}
+                        # Test for numeric range = "nothing ahead, i.e. empty or closeParen" and "comparator-or-nothing behind" ...
+                        if [[ (-z $ncvEnding || "$ncvEnding" =~ ^\ ?$g_rightParen) && ($outputStream =~ ([\<\>=]|${tt[BEGIN_NCV]}[0-9]+)$) ]]; then
                             # numeric range
-                            valueBuffer+=$nextChar$followingNumber
+                            valueBuffer+='-'$followingNumber
                             inputStream=$ending
                             streamToken ${tt[INT_RANGE]}$valueBuffer; appendReturnValue outputStream
                         else
@@ -565,8 +584,8 @@ function parseQueryClause()
     done
 
     if ((globalNestingLevel!=0)); then
-        echo Parsing error: Unbalanced parentheses in argument "$1". > /dev/stderr
-        return 1
+        setError ${rc[UNBALANCED_PARENTHESES]}
+        return $?
     fi
 
     # Don't fall off the end of the input without flushing the buffer.
@@ -575,7 +594,7 @@ function parseQueryClause()
     fi
 
     setReturnValue "$outputStream"
-    return 0
+    return ${rc[SUCCESS]}
 }
 
 
@@ -601,17 +620,36 @@ function chooseExpandableWordType()
 }
 
 ##################################################################################################
-# advanceStream (stream [,count])
+# advanceStream (stream [,numberOrString [,forceLength] ] )
 #
-# Advances through a text stream by a fixed number of bytes (defaulting to 1 byte),
-# or by the length of a specified (non-numeric) string, writing the result to the global buffer.
+# Advances a stream by a certain number of bytes:
+#
+# (1) If only one argument is given, this routine advances through the data stream by one byte.
+# (2) If the second argument is numeric with VALUE <= the stream's LENGTH, the stream is advanced
+#     in bytes by the NUMERIC VALUE of the second argument, i.e. VALUE bytes are removed from the front.
+# (3) If the second argument is non-numeric OR is numeric with VALUE > the stream's LENGTH in bytes,
+#     the stream is advanced by the LENGTH of the second argument in bytes.
+# (4) The value-length smarts in (2) and (3) can be overridden by supplying "$TRUE" as a third
+#     argument, which causes the stream to be advanced LENGTH number of bytes in both cases.
+#
+# In all cases the result is written to the global return buffer.
 ##################################################################################################
 function advanceStream()
 {
-    local stream=$1 count=${2:-1}
-    [[ $count =~ ^[[:digit:]]+$ ]] || count=${#count}
+    local stream=$1 string=${2:-1}
+    declare -i forceLength=${3:-$FALSE} length
 
-    [[ $stream =~ ^.{$count}(.*) ]]
+    if ((forceLength)); then
+        length=${#string}
+    else
+        if [[ $string =~ ^[[:digit:]]+$ && $string -le ${#stream} ]]; then
+            length=$string
+        else
+            length=${#string}
+        fi
+    fi
+
+    [[ $stream =~ ^.{$length}(.*) ]]
 
     setReturnValue "${BASH_REMATCH[1]}"
 }

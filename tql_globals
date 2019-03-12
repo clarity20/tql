@@ -123,6 +123,7 @@ tt=(
     [INT_RANGE]='i'
     [FLOAT_LIST]='L'
     [INT_LIST]='l'
+    [DATE_LIST]='M'
     [NUMERIC]='N'
     [BEGIN_NCV]='n'
     [OPERATOR]='O'
@@ -189,6 +190,8 @@ rc=(
     [ILL_FORMED_CONFIG_FILE]=5
     [INVALID_TYPE]=6
     [DESCRIPTION_FILE_READ]=7
+    [INVALID_DATE]=8
+    [UNBALANCED_PARENTHESES]=9
 )
 declare -a eMsg
 eMsg=(
@@ -201,6 +204,8 @@ eMsg=(
     "Attribute '\$attribute' not allowed in regex section of config file."
     "Invalid type for expression '\$expression'."
     "Cannot read \$metadataType description file '\$descFile'."
+    "Invalid date expression."
+    "Error: Unbalanced parentheses in argument \$1."
 )
 
 declare -i g_returnCode=${rc[SUCCESS]}

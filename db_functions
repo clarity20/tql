@@ -338,7 +338,8 @@ function expandSelections()
     local tokenizedSelections completeExpansion currentSelection expandedSelection
 
     # Tokenize the (comma-delimited) list of selections
-    parseQueryClause "$rawSelections"; getReturnValue tokenizedSelections
+    parseQueryClause "$rawSelections" || return $?
+    getReturnValue tokenizedSelections
 
     # Handle the selections one-by-one. Each can contain one or more expandable words.
     completeExpansion=""
@@ -1469,7 +1470,7 @@ function processNamedNCVArgument()
                 fi
                 sql+="$tokenValue "
                 ;;
-            ${tt[ALNUM_LIST]})
+            ${tt[ALNUM_LIST]}${tt[DATE_LIST]})
                 valueListToSQL "$tokenValue" "$currentName" $TRUE; appendReturnValue sql
                 pendingEqualsSign=$FALSE
                 ;;
@@ -1517,12 +1518,17 @@ function convertFileTokenToList()
     loadFileAsCommaList "${fileName:-/dev/stdin}"; getReturnValue tokenValue
 
     # Discern the underlying data type. (It will be one of the list types, of course.)
-    # Check for numeric types: digits, negative sign (in front only!), decimal point
-    if [[ ( $tokenValue =~ ^[-0-9,.]+$ ) && ! ( $tokenValue =~ [^,]- ) ]]; then
-        if [[ $tokenValue =~ [.] ]]; then
-            tokenType=${tt[FLOAT_LIST]}
+    # Check for numeric types: digits, negative sign / dash, decimal point
+    if [[ $tokenValue =~ ^[-0-9,.]+$ ]]; then
+        # Dates have "-"s in their interior, numbers do not
+        if [[ $tokenValue =~ [^,]- ]]; then
+            tokenType=${tt[DATE_LIST]}
         else
-            tokenType=${tt[INT_LIST]}
+            if [[ $tokenValue =~ [.] ]]; then
+                tokenType=${tt[FLOAT_LIST]}
+            else
+                tokenType=${tt[INT_LIST]}
+            fi
         fi
     # An alphabetic type
     else
@@ -1571,7 +1577,7 @@ function expandDateRange()
             secondValue=$secondValue/31
         # none after but there is a number ...
         elif [[ $secondValue =~ [0-9] ]]; then
-            secondValue=${firstValue%/*}/$secondValue/31
+            secondValue=${firstValue%%/*}/$secondValue/31
         # secondValue is blank altogether ...
         else
             secondValue=$firstValue/31
