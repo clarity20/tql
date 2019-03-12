@@ -367,172 +367,31 @@ function parseQueryClause()
 
         # Numeric- and date-like values
         if [[ $inputStream =~ ^([-]?([0-9]*\.)?[0-9]+)(.*) ]]; then      # will capture the leading int or float of numeric/date-like values
+
+            # The general approach: Pick off the leading number and probe forward to determine the token's type and extent
             local oldInputStream=$inputStream
             local valueBuffer=${BASH_REMATCH[1]}
             advanceStream "$inputStream" "$valueBuffer" $TRUE; getReturnValue inputStream
 
-            # First character beyond the initial number tells us a lot about the full extent of the value
+            # First character beyond the initial number tells us a lot about the token
             local nextChar=${inputStream:0:1}
 
             case $nextChar in
-              ,) # function argument or numeric list
-                if ((funcNestingLevel > 0)); then
-                    if [[ $valueBuffer =~ \. ]]; then
-                        streamToken ${tt[DECIMAL]}$valueBuffer; appendReturnValue outputStream
-                    else
-                        streamToken ${tt[INTEGER]}$valueBuffer; appendReturnValue outputStream
-                    fi
-                else
-                    [[ $inputStream =~ ^$nextChar([-0-9,.]+)(.*) ]]    # NOTE: We could specify more precisely where negative signs may be placed
-                    valueBuffer+=$nextChar${BASH_REMATCH[1]}
-                    inputStream=${BASH_REMATCH[2]}
-                    if [[ $valueBuffer =~ \. ]]; then
-                        streamToken ${tt[FLOAT_LIST]}$valueBuffer; appendReturnValue outputStream
-                    else
-                        streamToken ${tt[INT_LIST]}$valueBuffer; appendReturnValue outputStream
-                    fi
-                fi
-                ;;
-              /) # date, date range, or division operator (TODO timestamps)
-                local followingPart startingDate
-                # First we deal with tokens that begin yyyy/mm/dd
-                if [[ $oldInputStream =~ ^([0-9]{4}/[0-9]{1,2}/[0-9]{1,2})(.*) ]]; then
-                    # Starts with a full date (yyyy/mm/dd). Discriminate between dates, date ranges and date subtractions
-                    startingDate=${BASH_REMATCH[1]}
-                    followingPart=${BASH_REMATCH[2]}
-
-                    # Minus sign after date means it's either a date range or a numeric-from-date subtraction.
-                    if [[ $followingPart =~ ^- ]]; then
-                        # We will always choose the date-range interpretation when both are valid. Alternatively,
-                        # the user can force the latter by inserting space delimiters in the input.
-
-                        # Grab the numeric-or-date part after the minus sign
-                        [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
-                        followingPart=${BASH_REMATCH[1]}
-                        inputStream=${BASH_REMATCH[2]}   # set, don't "advance" because it is not the source stream
-
-                        # A slash therein indicates a date range; stream it as such
-                        if [[ $followingPart =~ / ]]; then
-                            valueBuffer=$startingDate$followingPart
-                            streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
-
-                        # No slash, only digits means it is either a date range or a date subtraction
-                        elif [[ $followingPart =~ [0-9] ]]; then
-                            # We analyze the numbers surrounding the minus sign
-                            declare -i number1=${startingDate##*/}
-                            declare -i number2=${followingPart#-}
-                            if ((number2<=31 && number2>number1)); then
-                                # Treat it as a date range
-                                valueBuffer=$startingDate$followingPart
-                                streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
-                            else
-                                # Treat it as a date subtraction. Create three tokens.
-                                valueBuffer=$startingDate
-                                streamToken ${tt[DATE]}$valueBuffer ${tt[OPERATOR]}${globalNestingLevel}- ${tt[INTEGER]}$number2; appendReturnValue outputStream
-                            fi
-                        # other stuff after minus sign --> error
-                        else
-                            setError ${rc[INVALID_DATE]}; return $?
-                        fi
-                    else
-                        # No trailing minus sign. It's a plain old date.
-                        valueBuffer=${startingDate//\//-}
-                        inputStream=$followingPart   # set, don't "advance" because it is not the source stream
-                        streamToken ${tt[DATE]}$valueBuffer; appendReturnValue outputStream
-                    fi
-                # Process tokens that begin yyyy/mm. We interpret these as either date ranges or arithmetic.
-                elif [[ $oldInputStream =~ ^([0-9]{4}/[0-9]{1,2})(.*) ]]; then
-                    startingDate=${BASH_REMATCH[1]}
-                    followingPart=${BASH_REMATCH[2]}
-                    if [[ $followingPart =~ ^- ]]; then
-                        # Grab the date part after the minus sign
-                        [[ $followingPart =~ ^-([/0-9]+)(.*) ]]
-                        followingPart=${BASH_REMATCH[1]}
-                        inputStream=${BASH_REMATCH[2]}   # set, don't "advance"
-                        valueBuffer=$startingDate"-"$followingPart
-                        streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
-                    else
-                        # Treat it as arithmetic.
-                        inputStream=$followingPart   # set, don't "advance"
-                        streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}${globalNestingLevel}'/' ${tt[INTEGER]}${startingDate:5}; appendReturnValue outputStream
-                    fi
-                # Process tokens where the leading digits are clearly a number, NOT the beginning of a date
-                else
-                    streamToken ${tt[INTEGER]}$valueBuffer; appendReturnValue outputStream
-                fi
-                # This concludes the '/' processing.
-                ;;
-              :) # time value or prefix list
-                 #TODO Accommodate a range set (in the future), whose inputStream would be approximately ^:[0-9,:;-]+
-                [[ $inputStream =~ ^:([0-9,]+) ]]
-                local suffix=${BASH_REMATCH[1]}
-                declare -i prefix=$valueBuffer
-                advanceStream "$inputStream" ":"$suffix; getReturnValue inputStream
-
-                # Discriminate between time values and prefix lists by analyzing the suffix
-                if [[ $suffix =~ ^[0-5][0-9]$ ]]; then
-                    # Parse out the seconds (if present), allowing decimal values
-                    if [[ $inputStream =~ ^:([0-9]+(.[0-9]+)?) ]]; then
-                        local seconds=${BASH_REMATCH[1]}
-                        valueBuffer+=":"$suffix":"$seconds
-                        # Advance past the seconds
-                        advanceStream "$inputStream" ":"$seconds; getReturnValue inputStream
-                    else
-                        valueBuffer+=":"$suffix
-                    fi
-                    streamToken ${tt[TIME]}$valueBuffer; appendReturnValue outputStream
-                else
-                    # A prefix list, not a time value
-                    valueBuffer+=":"$suffix
-                    streamToken ${tt[PREFIX_LIST]}$valueBuffer; appendReturnValue outputStream
-                fi
-                ;;
-              -) # date, numeric range or subtraction operator
-                local followingNumber ending
-                oldInputStream=$inputStream
-                # Check for a date.
-                if [[ ( $valueBuffer =~ ^[0-9]{4}$ ) && ( $oldInputStream =~ ^(-[0-9]{1,2}-[0-9]{1,2})(.*) ) ]]; then
-                    valueBuffer+=${BASH_REMATCH[1]}
-                    inputStream=${BASH_REMATCH[2]}
-                    streamToken ${tt[DATE]}$valueBuffer; appendReturnValue outputStream
-                else
-                    # Not a date. Either a numeric range or arithmetic.
-                    [[ $inputStream =~ ^-([0-9]*)(.*) ]]
-                    followingNumber=${BASH_REMATCH[1]}
-                    ending=${BASH_REMATCH[2]}
-                    if [[ -n $followingNumber ]]; then
-                        # There are some following digits. We appeal to the observation that a numeric range is only valid
-                        # when it occurs as the sole token after a comparator (in the given NCV construct). We assume
-                        # that it's not an integer subtraction, by the "Contrapositive of Occam's razor" discussed elsewhere.
-
-                        # First reduce the "ending" to the current NCV without the NCV-ending markup
-                        [[ $ending =~ ^([^$tokenDelimiter]|$tokenDelimiter[^$g_ncvTypeMarkers])* ]]
-                        local ncvEnding=${BASH_REMATCH[1]}
-                        # Test for numeric range = "nothing ahead, i.e. empty or closeParen" and "comparator-or-nothing behind" ...
-                        if [[ (-z $ncvEnding || "$ncvEnding" =~ ^\ ?$g_rightParen) && ($outputStream =~ ([\<\>=]|${tt[BEGIN_NCV]}[0-9]+)$) ]]; then
-                            # numeric range
-                            valueBuffer+='-'$followingNumber
-                            inputStream=$ending
-                            streamToken ${tt[INT_RANGE]}$valueBuffer; appendReturnValue outputStream
-                        else
-                            # arithmetic subtraction     # TODO What about arithmetic negation?
-                            inputStream=$followingNumber$ending    # remove leading minus sign
-                            streamToken ${tt[INTEGER]}$valueBuffer ${tt[OPERATOR]}${globalNestingLevel}'-'; appendReturnValue outputStream
-                        fi
-                    else
-                        # There are no following digits (perhaps a name/word follows)
-                        inputStream=$followingNumber$ending
-                        streamToken ${tt[INTEGER]}$valueBuffer ${tt[OPERATOR]}${globalNestingLevel}'-'; appendReturnValue outputStream
-                    fi
-                fi
-                ;;
-              *) # Anything else means it is a single int or float. Buffer it because it could turn out to be a "123 Main St".
-                if [[ $valueBuffer =~ \. ]]; then
-                    bufferToken "$valueBuffer" ${tt[DECIMAL]}
-                else
-                    bufferToken "$valueBuffer" ${tt[INTEGER]}
-                fi
-                ;;
+              ,) ProcessNumberWithComma $valueBuffer "$inputStream" "$outputStream" $((funcNestingLevel > 0))
+                 getReturnValues inputStream outputStream
+                 ;;
+              /) ProcessNumberWithSlash $valueBuffer "$inputStream" "$oldInputStream" "$outputStream" $globalNestingLevel
+                 getReturnValues inputStream outputStream
+                 ;;
+              :) ProcessNumberWithColon $valueBuffer "$inputStream" "$outputStream"
+                 getReturnValues inputStream outputStream
+                 ;;
+              -) ProcessNumberWithHyphen $valueBuffer "$inputStream" "$outputStream" $globalNestingLevel
+                 getReturnValues inputStream outputStream
+                 ;;
+              *) ProcessPureNumber $valueBuffer
+                 # No return values
+                 ;;
             esac
             continue
 
@@ -597,6 +456,222 @@ function parseQueryClause()
     return ${rc[SUCCESS]}
 }
 
+################
+#
+# ProcessXXXX...() subroutines for numeric and semi-numeric tokens
+#
+
+#########################################################################################
+# ProcessPureNumber (valueBuffer, inStream, outStream)
+# The token will be a single int or float. Buffer it because it could turn out to be a "123 Main St".
+#########################################################################################
+function ProcessPureNumber()
+{
+    local valueBuffer=$1
+
+    if [[ $valueBuffer =~ \. ]]; then
+        bufferToken "$valueBuffer" ${tt[DECIMAL]}
+    else
+        bufferToken "$valueBuffer" ${tt[INTEGER]}
+    fi
+
+    return ${rc[SUCCESS]}
+}
+
+#########################################################################################
+# ProcessNumberWithHyphen (valueBuffer, inStream, outStream)
+# The token will be either a date, a numeric range or a subtraction operator
+#########################################################################################
+function ProcessNumberWithHyphen()
+{
+    local valueBuffer=$1 inputStream=$2 outputStream=$3 nestingLevel=$4
+    local followingNumber ending
+    local oldInputStream=$inputStream
+
+    # Check for a date.
+    if [[ ( $valueBuffer =~ ^[0-9]{4}$ ) && ( $oldInputStream =~ ^(-[0-9]{1,2}-[0-9]{1,2})(.*) ) ]]; then
+        valueBuffer+=${BASH_REMATCH[1]}
+        inputStream=${BASH_REMATCH[2]}
+        streamToken ${tt[DATE]}$valueBuffer; appendReturnValue outputStream
+    else
+        # Not a date. Either a numeric range or arithmetic.
+        [[ $inputStream =~ ^-([0-9]*)(.*) ]]
+        followingNumber=${BASH_REMATCH[1]}
+        ending=${BASH_REMATCH[2]}
+        if [[ -n $followingNumber ]]; then
+            # There are some following digits. We appeal to the observation that a numeric range is only valid
+            # when it occurs as the sole token after a comparator (in the given NCV construct). We assume
+            # that it's not an integer subtraction, by the "Contrapositive of Occam's razor" discussed elsewhere.
+
+            # First reduce the "ending" to the current NCV without the NCV-ending markup
+            [[ $ending =~ ^([^$tokenDelimiter]|$tokenDelimiter[^$g_ncvTypeMarkers])* ]]
+            local ncvEnding=${BASH_REMATCH[1]}
+            # Test for numeric range = "nothing ahead, i.e. empty or closeParen" and "comparator-or-nothing behind" ...
+            if [[ (-z $ncvEnding || "$ncvEnding" =~ ^\ ?$g_rightParen) && ($outputStream =~ ([\<\>=]|${tt[BEGIN_NCV]}[0-9]+)$) ]]; then
+                # numeric range
+                valueBuffer+='-'$followingNumber
+                inputStream=$ending
+                streamToken ${tt[INT_RANGE]}$valueBuffer; appendReturnValue outputStream
+            else
+                # arithmetic subtraction     # TODO What about arithmetic negation?
+                inputStream=$followingNumber$ending    # remove leading minus sign
+                streamToken ${tt[INTEGER]}$valueBuffer ${tt[OPERATOR]}${nestingLevel}'-'; appendReturnValue outputStream
+            fi
+        else
+            # There are no following digits (perhaps a name/word follows)
+            inputStream=$followingNumber$ending
+            streamToken ${tt[INTEGER]}$valueBuffer ${tt[OPERATOR]}${nestingLevel}'-'; appendReturnValue outputStream
+        fi
+    fi
+
+    setReturnValues "$inputStream" "$outputStream"
+    return ${rc[SUCCESS]}
+}
+
+#########################################################################################
+# ProcessNumberWithColon (valueBuffer, inStream, outStream)
+# The token will be either a time value or prefix list
+#########################################################################################
+function ProcessNumberWithColon()
+{
+    local valueBuffer=$1 inputStream=$2 outputStream=$3
+
+    #TODO Accommodate a range set, whose inputStream would be approximately ^:[0-9,:;-]+
+    [[ $inputStream =~ ^:([0-9,]+) ]]
+    local suffix=${BASH_REMATCH[1]}
+    declare -i prefix=$valueBuffer
+    advanceStream "$inputStream" ":"$suffix; getReturnValue inputStream
+
+    # Discriminate between time values and prefix lists by analyzing the suffix
+    if [[ $suffix =~ ^[0-5][0-9]$ ]]; then
+        # Parse out the seconds (if present), allowing decimal values
+        if [[ $inputStream =~ ^:([0-9]+(.[0-9]+)?) ]]; then
+            local seconds=${BASH_REMATCH[1]}
+            valueBuffer+=":"$suffix":"$seconds
+            # Advance past the seconds
+            advanceStream "$inputStream" ":"$seconds; getReturnValue inputStream
+        else
+            valueBuffer+=":"$suffix
+        fi
+        streamToken ${tt[TIME]}$valueBuffer; appendReturnValue outputStream
+    else
+        # A prefix list, not a time value
+        valueBuffer+=":"$suffix
+        streamToken ${tt[PREFIX_LIST]}$valueBuffer; appendReturnValue outputStream
+    fi
+
+    setReturnValues "$inputStream" "$outputStream"
+    return ${rc[SUCCESS]}
+}
+
+#########################################################################################
+# ProcessNumberWithComma (valueBuffer, inStream, outStream, insideFunction)
+# The token will be either a function argument or a numeric list
+#########################################################################################
+function ProcessNumberWithComma()
+{
+    local valueBuffer=$1 inputStream=$2 outputStream=$3 insideFunction=$4
+
+    if ((insideFunction)); then
+        if [[ $valueBuffer =~ \. ]]; then
+            streamToken ${tt[DECIMAL]}$valueBuffer; appendReturnValue outputStream
+        else
+            streamToken ${tt[INTEGER]}$valueBuffer; appendReturnValue outputStream
+        fi
+    else
+        [[ $inputStream =~ ^,[-0-9,.]+ ]]    # We could specify more precisely where negative signs may be placed
+        valueBuffer+=${BASH_REMATCH[0]}
+        advanceStream "$inputBuffer" "${BASH_REMATCH[0]}"; getReturnValue inputStream
+        if [[ $valueBuffer =~ \. ]]; then
+            streamToken ${tt[FLOAT_LIST]}$valueBuffer; appendReturnValue outputStream
+        else
+            streamToken ${tt[INT_LIST]}$valueBuffer; appendReturnValue outputStream
+        fi
+    fi
+
+    setReturnValues "$inputStream" "$outputStream"
+    return ${rc[SUCCESS]}
+}
+
+#########################################################################################
+# ProcessNumberWithSlash (valueBuffer, inStream, oldInStream, outStream)
+# The token will be either a date, date range, or a number to be divided (TODO timestamps)
+#########################################################################################
+function ProcessNumberWithSlash()
+{
+    local valueBuffer=$1 inputStream=$2 oldInputStream=$3 outputStream=$4 nestingLevel=$5
+    local followingPart startingDate
+
+    local followingPart startingDate
+    # First we deal with tokens that begin yyyy/mm/dd
+    if [[ $oldInputStream =~ ^([0-9]{4}/[0-9]{1,2}/[0-9]{1,2})(.*) ]]; then
+        # Starts with a full date (yyyy/mm/dd). Discriminate between dates, date ranges and date subtractions
+        startingDate=${BASH_REMATCH[1]}
+        followingPart=${BASH_REMATCH[2]}
+
+        # Minus sign after date means it's either a date range or a numeric-from-date subtraction.
+        if [[ $followingPart =~ ^- ]]; then
+            # We will always choose the date-range interpretation when both are valid. Alternatively,
+            # the user can force the latter by inserting space delimiters in the input.
+
+            # Grab the numeric-or-date part after the minus sign
+            [[ $followingPart =~ ^(-[/0-9]+)(.*) ]]
+            followingPart=${BASH_REMATCH[1]}
+            inputStream=${BASH_REMATCH[2]}   # set, don't "advance" because it is not the source stream
+
+            # A slash therein indicates a date range; stream it as such
+            if [[ $followingPart =~ / ]]; then
+                valueBuffer=$startingDate$followingPart
+                streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
+
+            # No slash, only digits means it is either a date range or a date subtraction
+            elif [[ $followingPart =~ [0-9] ]]; then
+                # We analyze the numbers surrounding the minus sign
+                declare -i number1=${startingDate##*/}
+                declare -i number2=${followingPart#-}
+                if ((number2<=31 && number2>number1)); then
+                    # Treat it as a date range
+                    valueBuffer=$startingDate$followingPart
+                    streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
+                else
+                    # Treat it as a date subtraction. Create three tokens.
+                    valueBuffer=$startingDate
+                    streamToken ${tt[DATE]}$valueBuffer ${tt[OPERATOR]}${nestingLevel}- ${tt[INTEGER]}$number2; appendReturnValue outputStream
+                fi
+            # other stuff after minus sign --> error
+            else
+                setError ${rc[INVALID_DATE]}; return $?
+            fi
+        else
+            # No trailing minus sign. It's a plain old date.
+            valueBuffer=${startingDate//\//-}
+            inputStream=$followingPart   # set, don't "advance" because it is not the source stream
+            streamToken ${tt[DATE]}$valueBuffer; appendReturnValue outputStream
+        fi
+    # Process tokens that begin yyyy/mm. We interpret these as either date ranges or arithmetic.
+    elif [[ $oldInputStream =~ ^([0-9]{4}/[0-9]{1,2})(.*) ]]; then
+        startingDate=${BASH_REMATCH[1]}
+        followingPart=${BASH_REMATCH[2]}
+        if [[ $followingPart =~ ^- ]]; then
+            # Grab the date part after the minus sign
+            [[ $followingPart =~ ^-([/0-9]+)(.*) ]]
+            followingPart=${BASH_REMATCH[1]}
+            inputStream=${BASH_REMATCH[2]}   # set, don't "advance"
+            valueBuffer=$startingDate"-"$followingPart
+            streamToken ${tt[DATE_RANGE]}$valueBuffer; appendReturnValue outputStream
+        else
+            # Treat it as arithmetic.
+            inputStream=$followingPart   # set, don't "advance"
+            streamToken ${tt[INTEGER]}${startingDate:0:4} ${tt[OPERATOR]}${nestingLevel}'/' ${tt[INTEGER]}${startingDate:5}; appendReturnValue outputStream
+        fi
+    # Process tokens where the leading digits are clearly a number, NOT the beginning of a date
+    else
+        streamToken ${tt[INTEGER]}$valueBuffer; appendReturnValue outputStream
+    fi
+
+    setReturnValues "$inputStream" "$outputStream"
+    return ${rc[SUCCESS]}
+}
 
 #########################################################################################
 # chooseExpandableWordType ()
