@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 : ${TQL_HOME:=$HOME/tql}
-source $TQL_HOME/db_functions
+TQL_INCLUDE=$TQL_HOME/include
+source $TQL_INCLUDE/db_functions
 
 shouldHelpOrExecute "$1" $#; declare -i helpCode=$?
 if ((helpCode)); then

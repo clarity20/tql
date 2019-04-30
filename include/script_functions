@@ -56,7 +56,7 @@ function isArgOfType()
         # Grab the regex for this typename from the big typeRegexMap above
         [[ "$typeRegexMap" =~ $NL${a_typeName}[\ ]+([^$'\n']*) ]]  # This finds the line having FIRST COLUMN of a_typeName and grabs the regex.
         regex=${BASH_REMATCH[1]}
-        if [[ -z $regex ]]; then echo Unrecognized type name "$a_typeName". > /dev/stderr; return 0; fi
+        if [[ -z $regex ]]; then echo Unrecognized type name "$a_typeName". > $g_errorStream; return 0; fi
 
         # See if the regex matches the value supplied
         [[ ! "$a_value" =~ $regex ]]; retVal=$?     # yes=>1, no=>0
@@ -76,7 +76,7 @@ function isArgOfType()
         done
         regexSet=${regexSet%$'|'}
 
-        if [[ ! $typeRegexPairs =~ [[:alpha:]] ]]; then echo Unrecognized type name "$a_typeName". > /dev/stderr; return 0; fi
+        if [[ ! $typeRegexPairs =~ [[:alpha:]] ]]; then echo Unrecognized type name "$a_typeName". > $g_errorStream; return 0; fi
 
         # Match the value against the set of regexes corresponding to the given typeNames
         if [[ "$a_value" =~ $regexSet ]]; then

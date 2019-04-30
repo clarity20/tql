@@ -210,7 +210,11 @@ eMsg=(
 
 declare -i g_returnCode=${rc[SUCCESS]}
 g_statusMsg=""
-g_errorStream=/dev/stderr
+if [[ -w $g_errorStream ]]; then
+    g_errorStream=/dev/stderr
+else
+    g_errorStream=/proc/self/fd/2
+fi
 
 ###########
 # setError (returnCode [, errMsg] )
@@ -238,7 +242,7 @@ function setError()
 ###########
 function doExit()
 {
-    echo -e "${1:-$g_statusMsg}" >> $g_errorStream
+    echo -e "${1:-$g_statusMsg}" > $g_errorStream
     exit $g_returnCode
 }
 

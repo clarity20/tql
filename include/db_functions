@@ -14,14 +14,14 @@ shopt -s extglob
 
 # Load the universal TQL constants
 if ((g_sourcedGlobals!=1)); then
-    source $TQL_HOME/tql_globals
+    source $TQL_INCLUDE/tql_globals
     g_sourcedGlobals=1
 fi
 
 # TODO Phase this out; bring isArgOfType into the main code
-source $TQL_HOME/script_functions
+source $TQL_INCLUDE/script_functions
 
-source $TQL_HOME/expand_functions
+source $TQL_INCLUDE/expand_functions
 
 # TODO Consider introducing some variable naming conventions for better readability
 # and to minimize shadowing bugs.
@@ -122,7 +122,7 @@ function parseCompletely()
     # Load the expression parser
     if [[ $g_haveParser == $FALSE ]]; then
         g_haveParser=$TRUE
-        source $TQL_HOME/parse_functions
+        source $TQL_INCLUDE/parse_functions
     fi
 
     # If the UPDATE option is active, prepare the SET clause
@@ -229,7 +229,7 @@ function parseCompletely()
     if [[ $queryType == ${qt[SELECT]} ]]; then
         # Check for empty SELECT clause. (Should only be possible if "00" option is invoked.)
         if [[ ! "$ACTION_CLAUSE" =~ [[:alnum:]*] ]]; then
-            echo ERROR: Your column selection is empty. Please select some columns. > /dev/stderr
+            echo ERROR: Your column selection is empty. Please select some columns. > $g_errorStream
             return 10
         fi
     fi
@@ -281,9 +281,9 @@ function parseCompletely()
 
     # If the WHERE clause is effectively empty, provide a warning before returning an unrestricted result set
     if [[ ( -z "$WHERE_CLAUSE" ) && ( ! $LIMIT_CLAUSE =~ [1-9] ) && ( ! $ACTION_CLAUSE =~ "count(*)" ) && ( $g_warnOnSelectAll == $TRUE ) ]]; then
-        echo WARNING: Query is unrestricted, every record will be returned! > /dev/stderr
-        read -n1 -p "Continue (y/n)? " doContinue > /dev/stderr
-        echo > /dev/stderr
+        echo WARNING: Query is unrestricted, every record will be returned! > $g_errorStream
+        read -n1 -p "Continue (y/n)? " doContinue > $g_errorStream
+        echo > $g_errorStream
         if [[ ! $doContinue =~ ^[Yy]$ ]]; then
             echo Query cancelled.
             return 14
@@ -777,7 +777,7 @@ function parseOutOptions()
                 ((++idx))
                 eval newArg=\$$idx
                 if [[ ! $newArg =~ ^[0-9]+$ ]]; then
-                    echo Error: Limit must be numeric. > /dev/stderr
+                    echo Error: Limit must be numeric. > $g_errorStream
                     exit 20
                 fi
                 arg+=$newArg
@@ -1511,7 +1511,7 @@ function convertFileTokenToList()
     # If the data is stdin-sourced (i.e. no filename was given), prompt the user for it
     if [[ -z $fileName ]]; then
         if [[ -n $columnName ]]; then msg="for '$columnName' "; else msg=; fi
-        echo '>>> Your values '$msg '(finish with <enter> <ctrl-D>):' > /dev/stderr
+        echo '>>> Your values '$msg '(finish with <enter> <ctrl-D>):' > $g_errorStream
     fi
 
     # Load and strip the values. Some extra cleanup is needed that doesn't apply to cmdline lists.
@@ -1583,7 +1583,7 @@ function expandDateRange()
             secondValue=$firstValue/31
         fi
     else
-        echo "Error in date range." > /dev/stderr
+        echo "Error in date range." > $g_errorStream
     fi
 
     # Turn /'s into -'s for SQL compatibility

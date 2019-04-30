@@ -1005,17 +1005,17 @@ function promptForExpansion()
         matchingName=${matchingLine%%$delim2*}
     else
         # If we cannot identify a single "best" match, we ask the user to choose one from the list
-        echo Please enter a number for \"$1\": > /dev/stderr
+        echo Please enter a number for \"$1\": > $g_errorStream
         select matchingName in ${matchList[@]%%$delim2*}; do    # Select the first column only
             if [[ -z $matchingName ]]; then
                 # Keep trying until we get a response.
-                echo ERROR: Please choose a number from the list. > /dev/stderr
+                echo ERROR: Please choose a number from the list. > $g_errorStream
             else
                 if [[ "$REPLY" =~ ^[0-9]+$ ]]; then     ## REPLY = special shell variable set by select
                     matchingLine=${matchList[REPLY-1]}
                     break
                 else
-                    echo Alphabetic entries: Feature not yet implemented. Ask about recursive expansion. > /dev/stderr
+                    echo Alphabetic entries: Feature not yet implemented. Ask about recursive expansion. > $g_errorStream
                     # After the following recursive call, try the following:
                     # local answer=$(expandColumnNames "$1" $REPLY)
                     # finalNames[i] = answer line 1

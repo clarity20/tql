@@ -2,7 +2,7 @@
 
 # Source the file of universal TQL constants. TODO Move more of the constants below into this file.
 if ((g_sourcedGlobals!=1)); then
-    source $TQL_HOME/tql_globals
+    source $TQL_INCLUDE/tql_globals
     g_sourcedGlobals=1
 fi
 
