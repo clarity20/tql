@@ -57,7 +57,7 @@ To disable automatic execution of queries, producing only the fully-inflated SQL
 on your standard output, add the '-q' option (long form: '--query') to your
 TQL command invocations. Steps (1)-(3) above should not be necessary.
 
-# Contributions
+# Plenty of work to be done!
 The greatest thing about TQL is how ambitious it is! There is plenty of room
 for growth in all directions: 
 - expanding the range of query features the system can handle (_e.g._ column-name aliases)
@@ -67,8 +67,4 @@ for growth in all directions:
 and of course,
 - improving the documentation.
 ###### (and did I mention upgrading the system to a more suitable language?)
-
-Bug reports and fixes are always welcome.
-We plan on setting up a conventional list of open items on the Issues page in the near future.
-For now, please see the TODO file for a more extensive list of possible enhancements.
 
