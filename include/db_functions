@@ -1448,7 +1448,7 @@ function processNamedNCVArgument()
             ${tt[DELIMITER]})
                 sql+=", "
                 ;;
-            [${tt[STRING_CONSTANT]}${tt[DATE]}])
+            [${tt[STRING_CONSTANT]}${tt[DATE]}${tt[TIME]}])
                 if [[ $pendingEqualsSign == $TRUE ]]; then
                     sql+="= "
                     pendingEqualsSign=$FALSE
