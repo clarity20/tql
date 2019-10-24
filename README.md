@@ -1,5 +1,6 @@
 # TQL: the Terse Query Language
-#Please note: TQL has been superseded by Miniquery. Code and features are being ported there as a permanent measure.
+*Please note: TQL has been superseded by Miniquery. Code and features are being ported there as a permanent measure.*
+
 TQL is a software library that makes working with relational databases *massively*
 easier than writing and running conventional SQL. If you run *lots* of queries
 and you don't want to sweat the SQL, then TQL is the query language for you.
