@@ -466,6 +466,9 @@ function useIntuitiveNulls()
                 [[ $notClause =~ ([^ ]*)\ (LIKE|IN|=)\ [^\ ]*$ ]]
                 lastColumnName="${BASH_REMATCH[1]}"
 
+#MMMM TODO PYTHON:
+#A better way to retrieve "columnList" is to query it here after having stored it in
+#the most basic way at the time the SQL was constructed
                 local columnList
                 if [[ $firstColumnName == $lastColumnName ]]; then
                     columnList=$firstColumnName

@@ -267,6 +267,7 @@ function smartExpandExpression()
     declare -a chosenTypeSignature chosenTransformSignature
 
     # Run the iteration repeatedly until all expandables have been examined
+    #MMMM TODO PYTHON Use this:     import itertools; permGen=itertools.permutations(myList); permList=list(permGen)
     while ((startingIndex < expansionCount)); do
         # Initialize the iteration
         for ((whichIndex = startingIndex; whichIndex < expansionCount; whichIndex++)); do
