@@ -1,5 +1,6 @@
 # TQL: the Terse Query Language
-*Please note: TQL has been superseded by Miniquery. Code and features are being ported there as a permanent measure.*
+*Please note: TQL is not being actively maintained. The code and features are being 
+ported to python for incorporation into Miniquery.*
 
 TQL is a software library that makes working with relational databases *massively*
 easier than writing and running conventional SQL. If you run *lots* of queries
@@ -59,8 +60,6 @@ To disable automatic execution of queries, producing only the fully-inflated SQL
 on your standard output, add the '-q' option (long form: '--query') to your
 TQL command invocations. Steps (1)-(3) above should not be necessary.
 
-<<<<<<< HEAD
-=======
 # Plenty of work to be done!
 The greatest thing about TQL is how ambitious it is! There is plenty of room
 for growth in all directions: 
@@ -71,5 +70,3 @@ for growth in all directions:
 and of course,
 - improving the documentation.
 ###### (and did I mention upgrading the system to a more suitable language?)
-
->>>>>>> 355af78c8fcf38123b99d07cdb2cc4d87dc6e907
